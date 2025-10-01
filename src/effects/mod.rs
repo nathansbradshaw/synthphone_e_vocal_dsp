@@ -59,6 +59,8 @@ where
         last_input_phases[i] = phase;
     }
 
+    let octave_factor = settings.octave as f32 * 0.5;
+
     // Extract formant envelope if needed
     if formant != 0 {
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
@@ -92,7 +94,7 @@ where
         } else {
             analysis_magnitudes[i]
         };
-        let new_bin_f = i as f32 * pitch_shift_ratio;
+        let new_bin_f = i as f32 * pitch_shift_ratio * octave_factor;
         let new_bin = (floorf(new_bin_f + 0.5) as usize).min(num_bins - 1);
         if new_bin >= num_bins {
             continue;
@@ -313,7 +315,7 @@ where
                 analysis_magnitudes[i]
             };
 
-            let new_bin = (floorf(i as f32 * pitch_shift_ratio + 0.5)) as usize;
+            let new_bin = (floorf(i as f32 * pitch_shift_ratio + 0.5) * octave_factor) as usize;
 
             if new_bin < num_bins {
                 let shifted_envelope = if formant != 0 {
