@@ -6,7 +6,7 @@
 use crate::{
     MusicalSettings, ProcessingMode, VocalEffectsConfig,
     dsp::{Fft512, Fft1024, Fft2048, Fft4096, FftOps},
-    effects::{process_dry_generic, process_pitch_correction_generic, process_vocode_generic},
+    effects::{process_dry_generic, process_pitch_correction_generic, process_vocode_generic, process_harmony_generic},
 };
 
 /// Generic vocal effects processing function that works with different FFT sizes and processing modes
@@ -40,6 +40,22 @@ where
             settings,
         ),
         ProcessingMode::Dry => process_dry_generic::<N, HALF_N, F>(
+            unwrapped_buffer,
+            carrier_buffer,
+            last_input_phases,
+            last_output_phases,
+            config,
+            settings,
+        ),
+        ProcessingMode::Harmony => process_harmony_generic::<N, HALF_N, F>(
+            unwrapped_buffer,
+            carrier_buffer,
+            last_input_phases,
+            last_output_phases,
+            config,
+            settings,
+        ),
+        ProcessingMode::Phone => process_dry_generic::<N, HALF_N, F>(
             unwrapped_buffer,
             carrier_buffer,
             last_input_phases,
