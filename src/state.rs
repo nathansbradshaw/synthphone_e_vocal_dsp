@@ -1,13 +1,13 @@
 /// Processing modes for vocal effects
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessingMode {
-    /// Pitch correction/autotune mode
-    Autotune,
+    /// Pitch correction/PitchControl mode
+    PitchControl,
     /// Vocoder mode - applies vocal formants to carrier signal
     Vocode,
     /// Dry mode - pitch shifting with formant preservation but no correction
     Dry,
-    /// Harmony mode - adding hamonies based on the played notes
+    /// Harmony mode - adding harmonies based on the played notes
     Harmony,
     /// Phone mode - ringer drum sounds (or regular phone notes not sure yet)
     Phone,
@@ -38,7 +38,7 @@ impl Default for MusicalSettings {
             midi_frequencies: [0.0; 8],
             octave: 2,
             formant: 0, // No formant shift
-            mode: ProcessingMode::Autotune,
+            mode: ProcessingMode::PitchControl,
         }
     }
 }

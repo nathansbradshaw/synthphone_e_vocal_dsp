@@ -23,7 +23,7 @@ where
     F: FftOps<N, HALF_N>,
 {
     match settings.mode {
-        ProcessingMode::Autotune => process_pitch_correction_generic::<N, HALF_N, F>(
+        ProcessingMode::PitchControl => process_pitch_correction_generic::<N, HALF_N, F>(
             unwrapped_buffer,
             last_input_phases,
             last_output_phases,
