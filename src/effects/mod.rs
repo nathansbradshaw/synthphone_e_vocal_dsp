@@ -1,10 +1,8 @@
-use core::f32::consts::PI;
-
-use libm::{atan2f, cosf, expf, fabsf, floorf, sinf, sqrtf};
+use libm::{expf, fabsf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{self, FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
+    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
 };
 
 /// Generic pitch correction processing (pitch correction)
@@ -19,8 +17,6 @@ pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
 where
     F: FftOps<N, HALF_N>,
 {
-    const GAIN_COMPENSATION: f32 = 2.0 / 3.0;
-
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let bin_width = config.sample_rate / N as f32;
 
@@ -44,20 +40,13 @@ where
 
     // Process frequency bins - limit to the actual number of bins we have arrays for
     let num_bins = HALF_N.min(fft_result.len());
-    for i in 0..num_bins {
-        let amplitude =
-            sqrtf(fft_result[i].re * fft_result[i].re + fft_result[i].im * fft_result[i].im);
-        let phase = atan2f(fft_result[i].im, fft_result[i].re);
-        let mut phase_diff = phase - last_input_phases[i];
-        let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
-        phase_diff = dsp::frequency_analysis::wrap_phase(
-            phase_diff - bin_centre_frequency * hop_size as f32,
-        );
-        let bin_deviation = phase_diff * N as f32 / hop_size as f32 / (2.0 * PI);
-        analysis_frequencies[i] = i as f32 + bin_deviation;
-        analysis_magnitudes[i] = amplitude;
-        last_input_phases[i] = phase;
-    }
+    frequency_analysis::perform_phase_vocoder_analysis::<N, HALF_N>(
+        fft_result,
+        last_input_phases,
+        &mut analysis_magnitudes,
+        &mut analysis_frequencies,
+        hop_size,
+    );
 
     let octave_factor = settings.octave as f32 * 0.5;
 
@@ -118,21 +107,13 @@ where
     }
 
     // Synthesis phase reconstruction
-    for i in 0..num_bins {
-        let magnitude = synthesis_magnitudes[i];
-        let bin_deviation = synthesis_frequencies[i] - i as f32;
-        let mut phase_increment = bin_deviation * 2.0 * PI * hop_size as f32 / N as f32;
-        let bin_center_frequency = 2.0 * PI * i as f32 / N as f32;
-        phase_increment += bin_center_frequency * hop_size as f32;
-        let output_phase = frequency_analysis::wrap_phase(last_output_phases[i] + phase_increment);
-        let real_part = magnitude * cosf(output_phase);
-        let imaginary_part = magnitude * sinf(output_phase);
-        full_spectrum[i] = microfft::Complex32 { re: real_part, im: imaginary_part };
-        if i > 0 && i < num_bins {
-            full_spectrum[N - i] = microfft::Complex32 { re: real_part, im: -imaginary_part };
-        }
-        last_output_phases[i] = output_phase;
-    }
+    frequency_analysis::perform_phase_vocoder_synthesis::<N>(
+        &mut synthesis_magnitudes,
+        &mut synthesis_frequencies,
+        last_output_phases,
+        &mut full_spectrum,
+        hop_size,
+    );
 
     // Inverse FFT
     let time_domain_result = F::inverse_fft(&mut full_spectrum);
@@ -141,7 +122,6 @@ where
     for i in 0..N {
         let mut sample = time_domain_result[i].re;
         sample *= analysis_window_buffer[i];
-        sample *= GAIN_COMPENSATION;
         if sample.abs() > 0.95 {
             let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
             let compressed = 0.95 - 0.05 * expf(-fabsf(sample));
@@ -276,21 +256,13 @@ where
         let num_bins = HALF_N.min(fft_result.len());
 
         // Analysis phase
-        for i in 0..num_bins {
-            let amplitude =
-                sqrtf(fft_result[i].re * fft_result[i].re + fft_result[i].im * fft_result[i].im);
-            let phase = atan2f(fft_result[i].im, fft_result[i].re);
-
-            let mut phase_diff = phase - last_input_phases[i];
-            let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
-            phase_diff =
-                frequency_analysis::wrap_phase(phase_diff - bin_centre_frequency * hop_size as f32);
-            let bin_deviation = phase_diff * N as f32 / hop_size as f32 / (2.0 * PI);
-
-            analysis_frequencies[i] = i as f32 + bin_deviation;
-            analysis_magnitudes[i] = amplitude;
-            last_input_phases[i] = phase;
-        }
+        frequency_analysis::perform_phase_vocoder_analysis::<N, HALF_N>(
+            fft_result,
+            last_input_phases,
+            &mut analysis_magnitudes,
+            &mut analysis_frequencies,
+            hop_size,
+        );
 
         // Extract formant envelope if needed
         if formant != 0 {
@@ -339,26 +311,13 @@ where
         }
 
         // Synthesis phase reconstruction
-        for i in 0..num_bins {
-            let amplitude = synthesis_magnitudes[i];
-            let bin_deviation = synthesis_frequencies[i] - i as f32;
-
-            let mut phase_diff = bin_deviation * 2.0 * PI * hop_size as f32 / N as f32;
-            let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
-            phase_diff += bin_centre_frequency * hop_size as f32;
-
-            let out_phase = frequency_analysis::wrap_phase(last_output_phases[i] + phase_diff);
-            last_output_phases[i] = out_phase;
-
-            full_spectrum[i] = microfft::Complex32 {
-                re: amplitude * cosf(out_phase),
-                im: amplitude * sinf(out_phase),
-            };
-
-            if i > 0 && i < num_bins && N - i < full_spectrum.len() {
-                full_spectrum[N - i] = full_spectrum[i].conj();
-            }
-        }
+        frequency_analysis::perform_phase_vocoder_synthesis::<N>(
+            &mut synthesis_magnitudes,
+            &mut synthesis_frequencies,
+            last_output_phases,
+            &mut full_spectrum,
+            hop_size,
+        );
     }
 
     // Inverse FFT
@@ -387,7 +346,6 @@ where
 /// Generic harmony generation based on notes provided
 pub fn process_harmony_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
-    synth_buffer: Option<&mut [f32; N]>,
     last_input_phases: &mut [f32; N],
     last_output_phases: &mut [f32; N],
     config: &VocalEffectsConfig,
@@ -398,7 +356,7 @@ where
 {
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let analysis_window_buffer = F::get_hann_window();
-    let mut full_spectrum: [microfft::Complex32; N]  = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
+    let mut full_spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
     let mut analysis_magnitudes = [0.0; HALF_N];
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
@@ -414,25 +372,14 @@ where
     // Forward FFT
     let fft_result = F::forward_fft(unwrapped_buffer);
 
-    // Process with phase vocoder
-    let num_bins = HALF_N.min(fft_result.len());
-
     // Analysis phase
-    for i in 0..num_bins {
-        let amplitude =
-            sqrtf(fft_result[i].re * fft_result[i].re + fft_result[i].im * fft_result[i].im);
-        let phase = atan2f(fft_result[i].im, fft_result[i].re);
-
-        let mut phase_diff = phase - last_input_phases[i];
-        let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
-        phase_diff =
-            frequency_analysis::wrap_phase(phase_diff - bin_centre_frequency * hop_size as f32);
-        let bin_deviation = phase_diff * N as f32 / hop_size as f32 / (2.0 * PI);
-
-        analysis_frequencies[i] = i as f32 + bin_deviation;
-        analysis_magnitudes[i] = amplitude;
-        last_input_phases[i] = phase;
-    }
+    frequency_analysis::perform_phase_vocoder_analysis::<N, HALF_N>(
+        fft_result,
+        last_input_phases,
+        &mut analysis_magnitudes,
+        &mut analysis_frequencies,
+        hop_size,
+    );
 
     let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes);
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
@@ -444,28 +391,28 @@ where
     // Harmonized signal buffer
     let mut output_mix = [0.0f32; N];
 
-    // Synthesis phase reconstruction
-    for i in 0..N / 2 {
-        full_spectrum[i] = fft_result[i];
+    // Synthesis phase reconstruction for original voice
+    let num_bins = HALF_N.min(fft_result.len());
+    frequency_analysis::perform_phase_vocoder_synthesis(
+        &mut synthesis_magnitudes,
+        &mut synthesis_frequencies,
+        last_output_phases,
+        &mut full_spectrum,
+        hop_size,
+    );
 
-        if i > 0 {
-            // Rebuild the conjugate symmetry
-            full_spectrum[N - i].re = fft_result[i].re;
-            full_spectrum[N - i].im = -fft_result[i].im;
-        }
-    }
+    let res_original = F::inverse_fft(&mut full_spectrum);
 
-    let res_original =  F::inverse_fft(&mut full_spectrum);
-
+    // Comment out original voice for testing - only hear MIDI voices
     for i in 0..N {
         output_mix[i] += res_original[i].re;
     }
 
-    let mut voices = 0;
+    let mut voices = 0; // Start with 0 - we'll only count MIDI voices for testing
 
     // Add pitch-shifted harmonies
     for &frequency in settings.midi_frequencies.iter() {
-        if(frequency == 0.0){
+        if frequency == 0.0 {
             continue;
         }
 
@@ -475,7 +422,7 @@ where
         let mut spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
         let nyquist = N / 2;
 
-        for i in 0..nyquist {
+        for i in 0..num_bins {
             let shifted_index = floorf(i as f32 * shift_ratio + 0.5) as usize;
 
             if shifted_index < nyquist {
@@ -487,7 +434,7 @@ where
             }
         }
 
-        let res =  F::inverse_fft(&mut spectrum);
+        let res = F::inverse_fft(&mut spectrum);
 
         for i in 0..N {
             output_mix[i] += res[i].re;
@@ -495,8 +442,9 @@ where
     }
 
     let mut output_samples = [0.0f32; N];
+    let voice_count = voices.max(1); // Prevent division by zero
     for i in 0..N {
-        let sample = output_mix[i] / voices as f32;
+        let sample = output_mix[i] / voice_count as f32;
         output_samples[i] = sample * analysis_window_buffer[i];
     }
 
