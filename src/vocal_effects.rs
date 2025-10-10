@@ -49,7 +49,6 @@ where
         ),
         ProcessingMode::Harmony => process_harmony_generic::<N, HALF_N, F>(
             unwrapped_buffer,
-            carrier_buffer,
             last_input_phases,
             last_output_phases,
             config,

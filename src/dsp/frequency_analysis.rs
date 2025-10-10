@@ -1,6 +1,6 @@
 use core::f32::consts::PI;
 
-use libm::{fabsf, floorf, fmodf, roundf};
+use libm::{atan2f, cosf, fabsf, floorf, fmodf, roundf, sinf, sqrtf};
 
 use crate::audio::find_nearest_note_frequency;
 
@@ -128,6 +128,64 @@ pub fn wrap_phase(phase_in: f32) -> f32 {
         return fmodf(phase_in + PI, 2.0 * PI) - PI;
     }
     fmodf(phase_in - PI, -2.0 * PI) + PI
+}
+
+// Phase vocoder analysis function
+#[inline(always)]
+pub fn perform_phase_vocoder_analysis<const N: usize, const HALF_N: usize>(
+    fft: &[microfft::Complex32],
+    last_input_phases: &mut [f32; N],
+    analysis_magnitudes: &mut [f32; HALF_N],
+    analysis_frequencies: &mut [f32; HALF_N],
+    hop_size: usize,
+) {
+    for i in 0..fft.len() {
+        let amplitude = sqrtf(fft[i].re * fft[i].re + fft[i].im * fft[i].im);
+        let phase = atan2f(fft[i].im, fft[i].re);
+
+        // Phase difference for exact frequency
+        let mut phase_diff = phase - last_input_phases[i];
+
+        let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
+        phase_diff = wrap_phase(phase_diff - bin_centre_frequency * hop_size as f32);
+        let bin_deviation = phase_diff * N as f32 / hop_size as f32 / (2.0 * PI);
+
+        analysis_frequencies[i] = i as f32 + bin_deviation;
+        analysis_magnitudes[i] = amplitude;
+
+        last_input_phases[i] = phase;
+    }
+}
+
+// Phase vocoder synthesis function
+#[inline(always)]
+pub fn perform_phase_vocoder_synthesis<const N: usize>(
+    synthesis_magnitudes: &mut [f32; N],
+    synthesis_frequencies: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    full_spectrum: &mut [microfft::Complex32; N],
+    hop_size: usize,
+) {
+    for i in 0..N / 2 {
+        let amplitude = synthesis_magnitudes[i];
+        let bin_deviation = synthesis_frequencies[i] - i as f32;
+
+        let mut phase_diff = bin_deviation * 2.0 * PI * hop_size as f32 / N as f32;
+        let bin_centre_frequency = 2.0 * PI * i as f32 / N as f32;
+        phase_diff += bin_centre_frequency * hop_size as f32;
+
+        let out_phase = wrap_phase(last_output_phases[i] + phase_diff);
+        last_output_phases[i] = out_phase;
+
+        full_spectrum[i] = microfft::Complex32 {
+            re: amplitude * cosf(out_phase),
+            im: amplitude * sinf(out_phase),
+        };
+
+        if i > 0 && i < (N / 2) {
+            full_spectrum[N - i] = full_spectrum[i].conj();
+        }
+    }
 }
 
 #[cfg(test)]
