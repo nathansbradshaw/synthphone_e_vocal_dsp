@@ -59,7 +59,14 @@ where
         last_input_phases[i] = phase;
     }
 
-    let octave_factor = settings.octave as f32 * 0.5;
+    let mut octave_factor = settings.octave as f32 * 0.5;
+    if octave_factor <= 0.4 {
+        octave_factor = 1.0;
+    }
+
+    // Apply spectral shift
+    synthesis_magnitudes.fill(0.0);
+    synthesis_frequencies.fill(0.0);
 
     // Extract formant envelope if needed
     if formant != 0 {
@@ -75,9 +82,6 @@ where
         bin_width,
     );
 
-    // Apply spectral shift
-    synthesis_magnitudes.fill(0.0);
-    synthesis_frequencies.fill(0.0);
     let formant_ratio = match formant {
         1 => 0.5,
         2 => 2.0,
@@ -85,7 +89,7 @@ where
     };
     let use_formants = formant != 0;
 
-    for i in 0..num_bins {
+    for i in 0..HALF_N {
         if analysis_magnitudes[i] <= 1e-8 {
             continue;
         }
@@ -94,27 +98,27 @@ where
         } else {
             analysis_magnitudes[i]
         };
-        let new_bin_f = i as f32 * pitch_shift_ratio * octave_factor;
-        let new_bin = (floorf(new_bin_f + 0.5) as usize).min(num_bins - 1);
-        if new_bin >= num_bins {
-            continue;
-        }
+        let new_bin_f = i as f32 * pitch_shift_ratio;
+        let new_bin = (floorf(new_bin_f + 0.5) * octave_factor) as usize;
 
-        let shifted_envelope = if use_formants {
-            let env_pos = (i as f32 / formant_ratio).clamp(0.0, (num_bins - 1) as f32);
-            let env_idx = env_pos as usize;
-            let frac = env_pos - env_idx as f32;
-            if env_idx < num_bins - 1 {
-                envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
+        if new_bin < HALF_N {
+            let shifted_envelope = if use_formants {
+                let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
+                let env_idx = env_pos as usize;
+                let frac = env_pos - env_idx as f32;
+                if env_idx < HALF_N - 1 {
+                    envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
+                } else {
+                    envelope[env_idx]
+                }
             } else {
-                envelope[env_idx]
-            }
-        } else {
-            1.0
-        };
+                1.0
+            };
 
-        synthesis_magnitudes[new_bin] = residual * shifted_envelope;
-        synthesis_frequencies[new_bin] = analysis_frequencies[i] * pitch_shift_ratio;
+            synthesis_magnitudes[new_bin] = residual * shifted_envelope;
+            synthesis_frequencies[new_bin] =
+                analysis_frequencies[i] * pitch_shift_ratio * octave_factor;
+        }
     }
 
     // Synthesis phase reconstruction
