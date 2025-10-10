@@ -33,7 +33,8 @@ pub fn calculate_updates<const N: usize>(
 #[inline(always)]
 pub fn find_fundamental_frequency(analysis_magnitudes: &[f32]) -> usize {
     const MAX_HZ: usize = 2000;
-    const MAX_BIN: usize = MAX_HZ * FFT_SIZE / SAMPLE_RATE as usize;
+    //TODO: pass in these constants
+    const MAX_BIN: usize = MAX_HZ * 1024 / 48_014.312 as usize;
     const DOWNSAMPLE_FACTORS: [usize; 3] = [2, 3, 4];
     
 
