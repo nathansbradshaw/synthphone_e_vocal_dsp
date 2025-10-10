@@ -59,10 +59,7 @@ where
         last_input_phases[i] = phase;
     }
 
-    let mut octave_factor = settings.octave as f32 * 0.5;
-    if octave_factor <= 0.4 {
-        octave_factor = 1.0;
-    }
+    let octave_factor = settings.octave as f32 * 0.5;
 
     // Apply spectral shift
     synthesis_magnitudes.fill(0.0);
@@ -259,28 +256,20 @@ where
     let fft_result = F::forward_fft(unwrapped_buffer);
 
     let octave_factor = settings.octave as f32 * 0.5;
-    let pitch_shift_ratio = if octave_factor <= 0.4 {
-        1.0
-    } else {
-        octave_factor
-    };
+    let pitch_shift_ratio = octave_factor;
 
     // If no effects, just pass through
     if formant == 0 && (pitch_shift_ratio > 0.99 && pitch_shift_ratio < 1.01) {
         // Direct pass-through - just copy spectrum
-        let num_bins = HALF_N.min(fft_result.len());
-        full_spectrum[..num_bins].copy_from_slice(&fft_result[..num_bins]);
-        for i in 1..num_bins {
+        full_spectrum[..HALF_N].copy_from_slice(&fft_result[..HALF_N]);
+        for i in 1..HALF_N {
             if N - i < full_spectrum.len() {
                 full_spectrum[N - i] = fft_result[i].conj();
             }
         }
     } else {
-        // Process with phase vocoder
-        let num_bins = HALF_N.min(fft_result.len());
-
         // Analysis phase
-        for i in 0..num_bins {
+        for i in 0..HALF_N {
             let amplitude =
                 sqrtf(fft_result[i].re * fft_result[i].re + fft_result[i].im * fft_result[i].im);
             let phase = atan2f(fft_result[i].im, fft_result[i].re);
@@ -312,7 +301,7 @@ where
         };
 
         // Pitch and formant shifting
-        for i in 0..num_bins {
+        for i in 0..HALF_N {
             let residual = if formant != 0 {
                 analysis_magnitudes[i] / envelope[i].max(1e-6)
             } else {
@@ -321,13 +310,13 @@ where
 
             let new_bin = (floorf(i as f32 * pitch_shift_ratio + 0.5) * octave_factor) as usize;
 
-            if new_bin < num_bins {
+            if new_bin < HALF_N {
                 let shifted_envelope = if formant != 0 {
-                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (num_bins - 1) as f32);
+                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
                     let env_idx = env_pos as usize;
                     let frac = env_pos - env_idx as f32;
 
-                    if env_idx < num_bins - 1 {
+                    if env_idx < HALF_N - 1 {
                         envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
                     } else {
                         envelope[env_idx]
@@ -338,12 +327,13 @@ where
 
                 let final_magnitude = residual * shifted_envelope;
                 synthesis_magnitudes[new_bin] += final_magnitude;
-                synthesis_frequencies[new_bin] = analysis_frequencies[i] * pitch_shift_ratio;
+                synthesis_frequencies[new_bin] =
+                    analysis_frequencies[i] * pitch_shift_ratio * octave_factor;
             }
         }
 
         // Synthesis phase reconstruction
-        for i in 0..num_bins {
+        for i in 0..HALF_N {
             let amplitude = synthesis_magnitudes[i];
             let bin_deviation = synthesis_frequencies[i] - i as f32;
 
@@ -359,7 +349,7 @@ where
                 im: amplitude * sinf(out_phase),
             };
 
-            if i > 0 && i < num_bins && N - i < full_spectrum.len() {
+            if i > 0 && i < HALF_N && N - i < full_spectrum.len() {
                 full_spectrum[N - i] = full_spectrum[i].conj();
             }
         }
