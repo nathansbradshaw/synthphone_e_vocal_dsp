@@ -50,6 +50,8 @@ where
 
     let octave_factor = settings.octave as f32 * 0.5;
 
+    let octave_factor = settings.octave as f32 * 0.5;
+
     // Extract formant envelope if needed
     if formant != 0 {
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
