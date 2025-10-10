@@ -93,7 +93,7 @@ pub const KEYS: [(KeyScale, &str); 24] = [
 
 /// Returns the note name from a given `scale` based on `note` (1..9).
 /// Wraps around at 8 and 9, which effectively map back to scale.0\[0\] or scale.0\[1\].
-pub fn get_note_name(note: i32, scale: KeyScale) -> &'static str {
+pub fn get_note_name(note: i8, scale: KeyScale) -> &'static str {
     match note {
         1 => scale.0[0],
         2 => scale.0[1],
@@ -110,7 +110,7 @@ pub fn get_note_name(note: i32, scale: KeyScale) -> &'static str {
 
 /// Returns one of the 24 `KEYS` based on `key` (0..23).
 /// Defaults to `KEYS[0]` (C Major) if out of range.
-pub fn get_key(key: i32) -> KeyScale {
+pub fn get_key(key: i8) -> KeyScale {
     if let Some(k) = KEYS.get(key as usize) {
         k.0
     } else {
@@ -121,7 +121,7 @@ pub fn get_key(key: i32) -> KeyScale {
 
 /// Returns the "mode" of the key: "Major" if index < 12, otherwise "Minor".
 /// Defaults to "Major" if out of range.
-pub fn get_mode_name(key: i32) -> &'static str {
+pub fn get_mode_name(key: i8) -> &'static str {
     let idx = key as usize;
     if idx < 24 {
         // If index is in 0..11, it's Major, else Minor.
@@ -134,7 +134,7 @@ pub fn get_mode_name(key: i32) -> &'static str {
 
 /// Returns the name of the key based on KEY_NAMES
 /// Defaults to "C Major" if out of range.
-pub fn get_key_name(key: i32) -> &'static str {
+pub fn get_key_name(key: i8) -> &'static str {
     let key = key as usize;
     if key < KEYS.len() {
         KEYS[key].1
@@ -144,7 +144,7 @@ pub fn get_key_name(key: i32) -> &'static str {
     }
 }
 
-pub fn get_scale_by_key(key: i32) -> &'static KeyScaleFrequencies {
+pub fn get_scale_by_key(key: i8) -> &'static KeyScaleFrequencies {
     let key = key as usize;
     if key < KEYS.len() {
         &KEYS[key].0.1
@@ -154,7 +154,7 @@ pub fn get_scale_by_key(key: i32) -> &'static KeyScaleFrequencies {
     }
 }
 
-pub fn get_frequency(key: i32, note: i32, octave: i32, is_vocoder: bool) -> f32 {
+pub fn get_frequency(key: i8, note: i8, octave: i8, is_vocoder: bool) -> f32 {
     //TODO: maybe i should have the octave store index insted of values so i don't have to convert here?
     let offset = if is_vocoder { 0 } else { 2 };
 
