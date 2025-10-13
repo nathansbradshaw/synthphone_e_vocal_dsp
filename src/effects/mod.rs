@@ -50,8 +50,6 @@ where
 
     let octave_factor = settings.octave as f32 * 0.5;
 
-    let octave_factor = settings.octave as f32 * 0.5;
-
     // Apply spectral shift
     synthesis_magnitudes.fill(0.0);
     synthesis_frequencies.fill(0.0);
@@ -351,6 +349,8 @@ where
     F: FftOps<N, HALF_N>,
 {
     let hop_size = (N as f32 * config.hop_ratio) as usize;
+    let bin_width = config.sample_rate / N as f32;
+
     let analysis_window_buffer = F::get_hann_window();
     let mut full_spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
     let mut analysis_magnitudes = [0.0; HALF_N];
@@ -358,7 +358,6 @@ where
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
 
-    let bin_width = config.sample_rate / N as f32;
 
     // Apply windowing
     for i in 0..N {
@@ -383,13 +382,53 @@ where
     // Zero synthesis arrays
     synthesis_magnitudes.fill(0.0);
     synthesis_frequencies.fill(0.0);
+    
+    let mut voices = 0;
 
-    // Harmonized signal buffer
-    let mut output_mix = [0.0f32; N];
+    // Add original voice
+    for i in 0..HALF_N {
+        synthesis_magnitudes[i] += analysis_magnitudes[i];
+        synthesis_frequencies[i] = analysis_frequencies[i];
+    }
+    voices += 1;
+    
+    // Add pitch-shifted harmonies
+    for &frequency in settings.midi_frequencies.iter() {
+        if frequency == 0.0 {
+            continue;
+        }
+        
+        voices += 1;
+        
+        let shift_ratio = frequency / input_freq;
+        
+        for i in 0..HALF_N {
+            if analysis_magnitudes[i] <= 1e-8 {
+                continue;
+            }
 
-    // Synthesis phase reconstruction for original voice
-    let num_bins = HALF_N.min(fft_result.len());
-    frequency_analysis::perform_phase_vocoder_synthesis(
+            // Calculate new bin position for this harmony
+            let new_bin_f = i as f32 * shift_ratio;
+            let new_bin = floorf(new_bin_f + 0.5) as usize;
+            
+            if new_bin < HALF_N {
+                // Accumulate magnitude for this harmony voice
+                synthesis_magnitudes[new_bin] += analysis_magnitudes[i];
+
+                // For harmonies, we can just use the shifted frequency
+                synthesis_frequencies[new_bin] = analysis_frequencies[i] * shift_ratio;
+            }
+        }
+    }
+
+     // Normalize by voice count to prevent clipping
+    let normalization = 1.0 / voices as f32;
+    for i in 0..HALF_N {
+        synthesis_magnitudes[i] *= normalization;
+    }
+
+    // Synthesis phase reconstruction
+    frequency_analysis::perform_phase_vocoder_synthesis::<N>(
         &mut synthesis_magnitudes,
         &mut synthesis_frequencies,
         last_output_phases,
@@ -397,51 +436,22 @@ where
         hop_size,
     );
 
-    let res_original = F::inverse_fft(&mut full_spectrum);
-
-    // Comment out original voice for testing - only hear MIDI voices
-    for i in 0..N {
-        output_mix[i] += res_original[i].re;
-    }
-
-    let mut voices = 0; // Start with 0 - we'll only count MIDI voices for testing
-
-    // Add pitch-shifted harmonies
-    for &frequency in settings.midi_frequencies.iter() {
-        if frequency == 0.0 {
-            continue;
-        }
-
-        voices += 1;
-
-        let shift_ratio = frequency / input_freq;
-        let mut spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
-        let nyquist = N / 2;
-
-        for i in 0..num_bins {
-            let shifted_index = floorf(i as f32 * shift_ratio + 0.5) as usize;
-
-            if shifted_index < nyquist {
-                spectrum[shifted_index] = fft_result[i];
-                if shifted_index > 0 && shifted_index < nyquist {
-                    spectrum[N - shifted_index].re = fft_result[i].re;
-                    spectrum[N - shifted_index].im = -fft_result[i].im;
-                }
-            }
-        }
-
-        let res = F::inverse_fft(&mut spectrum);
-
-        for i in 0..N {
-            output_mix[i] += res[i].re;
-        }
-    }
+    let time_domain_result = F::inverse_fft(&mut full_spectrum);
 
     let mut output_samples = [0.0f32; N];
-    let voice_count = voices.max(1); // Prevent division by zero
+
     for i in 0..N {
-        let sample = output_mix[i] / voice_count as f32;
-        output_samples[i] = sample * analysis_window_buffer[i];
+        let mut sample = time_domain_result[i].re;
+        sample *= analysis_window_buffer[i];
+        
+        // Optional: soft clipping for safety
+        if sample.abs() > 0.95 {
+            let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
+            let compressed = 0.95 - 0.05 * expf(-fabsf(sample));
+            sample = sign * compressed;
+        }
+        
+        output_samples[i] = sample;
     }
 
     output_samples
