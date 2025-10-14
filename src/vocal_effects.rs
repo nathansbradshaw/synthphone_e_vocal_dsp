@@ -54,14 +54,6 @@ where
             config,
             settings,
         ),
-        ProcessingMode::Phone => process_dry_generic::<N, HALF_N, F>(
-            unwrapped_buffer,
-            carrier_buffer,
-            last_input_phases,
-            last_output_phases,
-            config,
-            settings,
-        ),
     }
 }
 

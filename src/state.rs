@@ -9,8 +9,6 @@ pub enum ProcessingMode {
     Dry,
     /// Harmony mode - adding harmonies based on the played notes
     Harmony,
-    /// Phone mode - ringer drum sounds (or regular phone notes not sure yet)
-    Phone,
 }
 
 /// Musical settings for vocal effects processing
