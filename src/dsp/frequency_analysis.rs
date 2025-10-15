@@ -36,7 +36,6 @@ pub fn find_fundamental_frequency(analysis_magnitudes: &[f32]) -> usize {
     //TODO: pass in these constants
     const MAX_BIN: usize = MAX_HZ * 1024 / 48_014.312 as usize;
     const DOWNSAMPLE_FACTORS: [usize; 3] = [2, 3, 4];
-    
 
     // Temporary array for HPS result
     let mut harmonic_product_spectrum = [0.0f32; MAX_BIN];

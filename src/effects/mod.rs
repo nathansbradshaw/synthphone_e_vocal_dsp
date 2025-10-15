@@ -358,7 +358,6 @@ where
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
 
-
     // Apply windowing
     for i in 0..N {
         unwrapped_buffer[i] *= analysis_window_buffer[i];
@@ -382,7 +381,7 @@ where
     // Zero synthesis arrays
     synthesis_magnitudes.fill(0.0);
     synthesis_frequencies.fill(0.0);
-    
+
     let mut voices = 0;
 
     // Add original voice
@@ -391,17 +390,17 @@ where
         synthesis_frequencies[i] = analysis_frequencies[i];
     }
     voices += 1;
-    
+
     // Add pitch-shifted harmonies
     for &frequency in settings.midi_frequencies.iter() {
         if frequency == 0.0 {
             continue;
         }
-        
+
         voices += 1;
-        
+
         let shift_ratio = frequency / input_freq;
-        
+
         for i in 0..HALF_N {
             if analysis_magnitudes[i] <= 1e-8 {
                 continue;
@@ -410,7 +409,7 @@ where
             // Calculate new bin position for this harmony
             let new_bin_f = i as f32 * shift_ratio;
             let new_bin = floorf(new_bin_f + 0.5) as usize;
-            
+
             if new_bin < HALF_N {
                 // Accumulate magnitude for this harmony voice
                 synthesis_magnitudes[new_bin] += analysis_magnitudes[i];
@@ -421,7 +420,7 @@ where
         }
     }
 
-     // Normalize by voice count to prevent clipping
+    // Normalize by voice count to prevent clipping
     let normalization = 1.0 / voices as f32;
     for i in 0..HALF_N {
         synthesis_magnitudes[i] *= normalization;
@@ -443,14 +442,14 @@ where
     for i in 0..N {
         let mut sample = time_domain_result[i].re;
         sample *= analysis_window_buffer[i];
-        
+
         // Optional: soft clipping for safety
         if sample.abs() > 0.95 {
             let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
             let compressed = 0.95 - 0.05 * expf(-fabsf(sample));
             sample = sign * compressed;
         }
-        
+
         output_samples[i] = sample;
     }
 
