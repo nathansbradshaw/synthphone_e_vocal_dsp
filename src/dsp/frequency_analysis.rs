@@ -32,30 +32,65 @@ pub fn calculate_updates<const N: usize>(
 
 #[inline(always)]
 pub fn find_fundamental_frequency(analysis_magnitudes: &[f32]) -> usize {
-    const MAX_HZ: usize = 2000;
-    //TODO: pass in these constants
-    const MAX_BIN: usize = MAX_HZ * 1024 / 48_014.312 as usize;
-    const DOWNSAMPLE_FACTORS: [usize; 3] = [2, 3, 4];
+    const MIN_HZ: f32 = 80.0; // Minimum vocal F0
+    const MAX_HZ: f32 = 500.0; // Maximum typical vocal F0
+
+    //TODO: pass in these constants----------
+    const FFT_SIZE: usize = 1024;
+    const SAMPLE_RATE: f32 = 48_014.312;
+    const NOISE_FLOOR_RATIO: f32 = 0.05;
+    //---------------------------------------
+
+    const BIN_WIDTH: f32 = SAMPLE_RATE / FFT_SIZE as f32;
+    const MAX_BIN: usize = (MAX_HZ as f32 / BIN_WIDTH) as usize;
+    const MIN_BIN: usize = (MIN_HZ / BIN_WIDTH).max(1.0) as usize;
+
+    const DOWNSAMPLE_FACTORS: [usize; 5] = [2, 3, 4, 5, 6];
 
     // Temporary array for HPS result
     let mut harmonic_product_spectrum = [0.0f32; MAX_BIN];
 
-    // Step 1: Copy base spectrum up to MAX_BIN
-    for i in 0..MAX_BIN {
-        harmonic_product_spectrum[i] = analysis_magnitudes[i];
+    // Ensure we don't read past the input array
+    let safe_max_bin = MAX_BIN.min(analysis_magnitudes.len());
+
+    // Find the maximum magnitude for normalization
+    let mut max_mag = 0.0f32;
+    for i in MIN_BIN..safe_max_bin {
+        if analysis_magnitudes[i] > max_mag {
+            max_mag = analysis_magnitudes[i];
+        }
+    }
+
+    let noise_threshold = max_mag * NOISE_FLOOR_RATIO;
+
+    // Filtering out any data below the min hz and normalizing
+    for i in MIN_BIN..safe_max_bin {
+        // Apply noise gate
+        if analysis_magnitudes[i] > noise_threshold {
+            // Copy spectrum within range and normalize to [0.0, 1.0]
+            harmonic_product_spectrum[i] = analysis_magnitudes[i] / max_mag;
+        } else {
+            harmonic_product_spectrum[i] = 0.0;
+        }
     }
 
     // Step 2: Multiply with downsampled versions
     for &factor in DOWNSAMPLE_FACTORS.iter() {
-        for i in 0..(MAX_BIN / factor) {
-            harmonic_product_spectrum[i] *= analysis_magnitudes[i * factor];
+        // i*factor must be < safe_max_bin
+        let limit = safe_max_bin / factor;
+
+        for i in MIN_BIN..limit {
+            let harmonic_idx = i * factor;
+
+            harmonic_product_spectrum[i] *= sqrtf(analysis_magnitudes[harmonic_idx] / max_mag);
         }
     }
 
     // Step 3: Find the bin with the maximum HPS value
     let mut max_val = 0.0;
-    let mut max_bin = 0;
-    for i in 1..MAX_BIN {
+    let mut max_bin = MIN_BIN;
+
+    for i in MIN_BIN..safe_max_bin {
         if harmonic_product_spectrum[i] > max_val {
             max_val = harmonic_product_spectrum[i];
             max_bin = i;
