@@ -2,7 +2,7 @@ use libm::{expf, fabsf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
+    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, extract_simple_envelope, frequency_analysis},
 };
 
 /// Generic pitch correction processing (pitch correction)
@@ -377,7 +377,7 @@ where
     );
 
     // Extract formant envelope for more natural sound
-    extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
+    extract_simple_envelope::<HALF_N>(&analysis_magnitudes, &mut envelope);
 
     let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes);
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;

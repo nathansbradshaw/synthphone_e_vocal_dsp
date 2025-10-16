@@ -13,14 +13,16 @@ pub fn extract_cepstral_envelope<const N: usize, const HALF_N: usize, F>(
     let mut full_spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
     let mut cepstrum_buffer = [0.0f32; N];
 
-    // Compute log spectrum
+    // Compute log spectrum with proper symmetry
     for i in 0..HALF_N {
         let mag = analysis_magnitudes[i].max(1e-6_f32);
         let log_mag = logf(mag);
         full_spectrum[i] = microfft::Complex32 { re: log_mag, im: 0.0 };
-        if i != 0 {
-            full_spectrum[N - i] = microfft::Complex32 { re: log_mag, im: 0.0 };
-        }
+    }
+
+    // Mirror for negative frequencies (skip DC at i=0 and Nyquist at HALF_N)
+    for i in 1..(HALF_N - 1) {
+        full_spectrum[N - i] = microfft::Complex32 { re: full_spectrum[i].re, im: 0.0 };
     }
 
     // Inverse FFT to get cepstrum
@@ -31,7 +33,8 @@ pub fn extract_cepstral_envelope<const N: usize, const HALF_N: usize, F>(
     for i in 0..LIFTER_CUTOFF.min(HALF_N) {
         cepstrum_buffer[i] = cepstrum[i].re;
     }
-    for i in (N - LIFTER_CUTOFF.min(HALF_N))..N {
+    // Mirror the lifter cutoff for negative quefrencies
+    for i in (N - LIFTER_CUTOFF.min(HALF_N) + 1)..N {
         cepstrum_buffer[i] = cepstrum[i].re;
     }
 
@@ -39,6 +42,24 @@ pub fn extract_cepstral_envelope<const N: usize, const HALF_N: usize, F>(
     let envelope_fft = F::forward_fft(&mut cepstrum_buffer);
     for i in 0..HALF_N {
         envelope[i] = expf(envelope_fft[i].re);
+    }
+}
+
+pub fn extract_simple_envelope<const HALF_N: usize>(
+    analysis_magnitudes: &[f32; HALF_N],
+    envelope: &mut [f32; HALF_N],
+) {
+    const SMOOTH_BINS: usize = 8;  // Small window for speed
+    
+    for i in 0..HALF_N {
+        let start = i.saturating_sub(SMOOTH_BINS);
+        let end = (i + SMOOTH_BINS + 1).min(HALF_N);
+        
+        let mut sum = 0.0;
+        for j in start..end {
+            sum += analysis_magnitudes[j];
+        }
+        envelope[i] = sum / (end - start) as f32;
     }
 }
 
@@ -65,10 +86,10 @@ pub fn calculate_pitch_shift(
             crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
         };
         let raw_ratio = target_frequency / detected_frequency;
-        let clamped_ratio = raw_ratio.clamp(0.5, 2.0);
+        //let clamped_ratio = raw_ratio.clamp(0.5, 2.0);
         const SMOOTHING_FACTOR: f32 = 0.99;
-        pitch_shift_ratio = clamped_ratio * SMOOTHING_FACTOR
-            + previous_pitch_shift_ratio * (1.0 - SMOOTHING_FACTOR);
+        pitch_shift_ratio =
+            raw_ratio * SMOOTHING_FACTOR + previous_pitch_shift_ratio * (1.0 - SMOOTHING_FACTOR);
     }
 
     pitch_shift_ratio
