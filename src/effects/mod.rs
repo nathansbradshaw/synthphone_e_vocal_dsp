@@ -357,6 +357,7 @@ where
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
+    let mut envelope = [1.0f32; HALF_N]; 
 
     // Apply windowing
     for i in 0..N {
@@ -374,6 +375,9 @@ where
         &mut analysis_frequencies,
         hop_size,
     );
+
+    // Extract formant envelope for more natural sound
+    extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
 
     let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes);
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
@@ -406,13 +410,25 @@ where
                 continue;
             }
 
+            //Extract the source (harmonic content) without formants
+            let residual = analysis_magnitudes[i] / envelope[i].max(1e-6);
+
             // Calculate new bin position for this harmony
             let new_bin_f = i as f32 * shift_ratio;
             let new_bin = floorf(new_bin_f + 0.5) as usize;
 
             if new_bin < HALF_N {
+                // Calculate original frequency position for this bin
+                let envelope_src_f = new_bin as f32 / shift_ratio;
+                let envelope_src = envelope_src_f.min((HALF_N - 2) as f32) as usize;
+
+                // Linear interpolation between two envelope bins
+                let frac = envelope_src_f - envelope_src as f32;
+                let preserved_envelope = envelope[envelope_src] * (1.0 - frac)
+                           + envelope[envelope_src + 1] * frac;
+
                 // Accumulate magnitude for this harmony voice
-                synthesis_magnitudes[new_bin] += analysis_magnitudes[i];
+                synthesis_magnitudes[new_bin] += residual * preserved_envelope;
 
                 // For harmonies, we can just use the shifted frequency
                 synthesis_frequencies[new_bin] = analysis_frequencies[i] * shift_ratio;
