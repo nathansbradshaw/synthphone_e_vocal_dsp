@@ -27,6 +27,7 @@ where
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
     let mut envelope = [1.0f32; HALF_N];
+    let mut hps_buffer = [1.0f32; HALF_N];
 
     let formant = settings.formant;
 
@@ -39,7 +40,6 @@ where
     let fft_result = F::forward_fft(unwrapped_buffer);
 
     // Process frequency bins - limit to the actual number of bins we have arrays for
-    let num_bins = HALF_N.min(fft_result.len());
     frequency_analysis::perform_phase_vocoder_analysis::<N, HALF_N>(
         fft_result,
         last_input_phases,
@@ -59,6 +59,10 @@ where
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
     }
 
+    let fundamental_index =
+        crate::dsp::frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer);
+    let fundamental_frequency = analysis_frequencies[fundamental_index] * bin_width;
+
     // Calculate pitch shift
     let pitch_shift_ratio = calculate_pitch_shift(
         &analysis_magnitudes,
@@ -66,6 +70,7 @@ where
         previous_pitch_shift_ratio,
         settings,
         bin_width,
+        fundamental_frequency,
     );
 
     let formant_ratio = match formant {
@@ -348,6 +353,8 @@ pub fn process_harmony_generic<const N: usize, const HALF_N: usize, F>(
 where
     F: FftOps<N, HALF_N>,
 {
+    const MAGNITUDE_THRESHOLD: f32 = 1e-6; 
+
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let bin_width = config.sample_rate / N as f32;
 
@@ -357,7 +364,8 @@ where
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
-    let mut envelope = [1.0f32; HALF_N]; 
+    let mut envelope = [1.0f32; HALF_N];
+    let mut hps_buffer = [1.0f32; HALF_N];
 
     // Apply windowing
     for i in 0..N {
@@ -379,7 +387,7 @@ where
     // Extract formant envelope for more natural sound
     extract_simple_envelope::<HALF_N>(&analysis_magnitudes, &mut envelope);
 
-    let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes);
+    let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer);
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
 
     // Zero synthesis arrays
@@ -406,29 +414,20 @@ where
         let shift_ratio = frequency / input_freq;
 
         for i in 0..HALF_N {
-            if analysis_magnitudes[i] <= 1e-8 {
+            if analysis_magnitudes[i] <= MAGNITUDE_THRESHOLD  {
                 continue;
             }
-
-            //Extract the source (harmonic content) without formants
-            let residual = analysis_magnitudes[i] / envelope[i].max(1e-6);
 
             // Calculate new bin position for this harmony
             let new_bin_f = i as f32 * shift_ratio;
             let new_bin = floorf(new_bin_f + 0.5) as usize;
 
             if new_bin < HALF_N {
-                // Calculate original frequency position for this bin
-                let envelope_src_f = new_bin as f32 / shift_ratio;
-                let envelope_src = envelope_src_f.min((HALF_N - 2) as f32) as usize;
-
-                // Linear interpolation between two envelope bins
-                let frac = envelope_src_f - envelope_src as f32;
-                let preserved_envelope = envelope[envelope_src] * (1.0 - frac)
-                           + envelope[envelope_src + 1] * frac;
+                // Initial spectral envelope position
+                let preserved_envelope = envelope[i];
 
                 // Accumulate magnitude for this harmony voice
-                synthesis_magnitudes[new_bin] += residual * preserved_envelope;
+                synthesis_magnitudes[new_bin] += analysis_magnitudes[i] * preserved_envelope;
 
                 // For harmonies, we can just use the shifted frequency
                 synthesis_frequencies[new_bin] = analysis_frequencies[i] * shift_ratio;

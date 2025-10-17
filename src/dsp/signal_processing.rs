@@ -69,23 +69,21 @@ pub fn calculate_pitch_shift(
     previous_pitch_shift_ratio: f32,
     settings: &MusicalSettings,
     bin_width: f32,
+    fundamental_frequency: f32,
 ) -> f32 {
     let mut pitch_shift_ratio = previous_pitch_shift_ratio;
-    let fundamental_index =
-        crate::dsp::frequency_analysis::find_fundamental_frequency(analysis_magnitudes);
-    let detected_frequency = analysis_frequencies[fundamental_index] * bin_width;
 
-    if detected_frequency > 0.001 {
+    if fundamental_frequency > 0.001 {
         let target_frequency = if settings.note == 0 {
             let scale_frequencies = crate::audio::keys::get_scale_by_key(settings.key);
             crate::audio::frequencies::find_nearest_note_in_key(
-                detected_frequency,
+                fundamental_frequency,
                 scale_frequencies,
             )
         } else {
             crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
         };
-        let raw_ratio = target_frequency / detected_frequency;
+        let raw_ratio = target_frequency / fundamental_frequency;
         //let clamped_ratio = raw_ratio.clamp(0.5, 2.0);
         const SMOOTHING_FACTOR: f32 = 0.99;
         pitch_shift_ratio =
