@@ -80,6 +80,8 @@ pub fn calculate_pitch_shift(
                 fundamental_frequency,
                 scale_frequencies,
             )
+        } else if settings.midi_frequencies[0] > 0.0 {
+            settings.midi_frequencies[0]
         } else {
             crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
         };
