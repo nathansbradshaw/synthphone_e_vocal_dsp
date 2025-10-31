@@ -74,14 +74,14 @@ pub fn calculate_pitch_shift(
     let mut pitch_shift_ratio = previous_pitch_shift_ratio;
 
     if fundamental_frequency > 0.001 {
-        let target_frequency = if settings.note == 0 {
+        let target_frequency = if settings.midi_frequencies[0] > 0.0 {
+            settings.midi_frequencies[0]
+        } else if settings.note == 0 {
             let scale_frequencies = crate::audio::keys::get_scale_by_key(settings.key);
             crate::audio::frequencies::find_nearest_note_in_key(
                 fundamental_frequency,
                 scale_frequencies,
             )
-        } else if settings.midi_frequencies[0] > 0.0 {
-            settings.midi_frequencies[0]
         } else {
             crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
         };
