@@ -104,6 +104,9 @@ pub fn get_note_name(note: i8, scale: KeyScale) -> &'static str {
         7 => scale.0[6],
         8 => scale.0[0], // wrap around
         9 => scale.0[1], // wrap around
+        10 => scale.0[2], // wrap around
+        11 => scale.0[3], // wrap around
+        12 => scale.0[4], // wrap around
         _ => "",         // out of range
     }
 }
