@@ -1,12 +1,14 @@
 /// Processing modes for vocal effects
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessingMode {
-    /// Pitch correction/autotune mode
-    Autotune,
+    /// Pitch correction/PitchControl mode
+    PitchControl,
     /// Vocoder mode - applies vocal formants to carrier signal
     Vocode,
     /// Dry mode - pitch shifting with formant preservation but no correction
     Dry,
+    /// Harmony mode - adding harmonies based on the played notes
+    Harmony,
 }
 
 /// Musical settings for vocal effects processing
@@ -14,8 +16,10 @@ pub enum ProcessingMode {
 pub struct MusicalSettings {
     /// Musical key (0-23, see keys module for mapping)
     pub key: i8,
-    /// Specific note (0 = auto mode, 1-9 = specific note in scale)
+    /// Specific note (0 = auto mode, 1-12 = specific note in scale)
     pub note: i8,
+    /// Midi notes provided
+    pub midi_frequencies: [f32; 8],
     /// Octave setting
     pub octave: i8,
     /// Formant shift mode (0 = none, 1 = lower, 2 = higher)
@@ -29,9 +33,10 @@ impl Default for MusicalSettings {
         Self {
             key: 0,  // C Major
             note: 0, // Auto mode
+            midi_frequencies: [0.0; 8],
             octave: 2,
             formant: 0, // No formant shift
-            mode: ProcessingMode::Autotune,
+            mode: ProcessingMode::PitchControl,
         }
     }
 }
