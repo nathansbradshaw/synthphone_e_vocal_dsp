@@ -20,7 +20,9 @@ pub fn extract_cepstral_envelope<const N: usize, const HALF_N: usize, F>(
         full_spectrum[i] = microfft::Complex32 { re: log_mag, im: 0.0 };
     }
 
-    // Mirror for negative frequencies (skip DC at i=0 and Nyquist at HALF_N)
+    // Mirror the log-magnitude into negative frequency slots for Hermitian symmetry.
+    // The log-spectrum is purely real (im=0), so conjugate-symmetric means copying the
+    // real part; this makes the IFFT output real-valued (the cepstrum).
     for i in 1..(HALF_N - 1) {
         full_spectrum[N - i] = microfft::Complex32 { re: full_spectrum[i].re, im: 0.0 };
     }
@@ -86,7 +88,6 @@ pub fn calculate_pitch_shift(
             crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
         };
         let raw_ratio = target_frequency / fundamental_frequency;
-        //let clamped_ratio = raw_ratio.clamp(0.5, 2.0);
         const SMOOTHING_FACTOR: f32 = 0.99;
         pitch_shift_ratio =
             raw_ratio * SMOOTHING_FACTOR + previous_pitch_shift_ratio * (1.0 - SMOOTHING_FACTOR);

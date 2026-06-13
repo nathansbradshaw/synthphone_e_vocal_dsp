@@ -60,7 +60,7 @@ where
     }
 
     let fundamental_index =
-        crate::dsp::frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer);
+        frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer, config);
     let fundamental_frequency = analysis_frequencies[fundamental_index] * bin_width;
 
     // Calculate pitch shift
@@ -353,7 +353,6 @@ pub fn process_harmony_generic<const N: usize, const HALF_N: usize, F>(
 where
     F: FftOps<N, HALF_N>,
 {
-    const MAGNITUDE_THRESHOLD: f32 = 1e-6; 
 
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let bin_width = config.sample_rate / N as f32;
@@ -387,7 +386,7 @@ where
     // Extract formant envelope for more natural sound
     extract_simple_envelope::<HALF_N>(&analysis_magnitudes, &mut envelope);
 
-    let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer);
+    let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer, config);
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
 
     // Zero synthesis arrays
@@ -414,7 +413,7 @@ where
         let shift_ratio = frequency / input_freq;
 
         for i in 0..HALF_N {
-            if analysis_magnitudes[i] <= MAGNITUDE_THRESHOLD  {
+            if analysis_magnitudes[i] <= config.magnitude_threshold {
                 continue;
             }
 

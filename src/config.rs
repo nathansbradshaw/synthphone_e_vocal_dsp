@@ -18,6 +18,14 @@ pub struct VocalEffectsConfig {
     pub min_frequency: f32,
     /// Maximum frequency to process (Hz)
     pub max_frequency: f32,
+    /// Noise floor ratio for HPS fundamental detection (0.0–1.0; bins below this fraction of peak are ignored)
+    pub hps_noise_floor_ratio: f32,
+    /// Downsample factors used in HPS algorithm (up to 4 factors; unused slots should be 0)
+    pub hps_downsample_factors: [usize; 4],
+    /// Number of active downsample factors in hps_downsample_factors
+    pub hps_num_factors: usize,
+    /// Magnitude threshold below which bins are skipped during processing
+    pub magnitude_threshold: f32,
 }
 
 impl Default for VocalEffectsConfig {
@@ -31,6 +39,10 @@ impl Default for VocalEffectsConfig {
             pitch_correction_strength: 0.999,
             min_frequency: 50.0,
             max_frequency: 4000.0,
+            hps_noise_floor_ratio: 0.1,
+            hps_downsample_factors: [2, 3, 4, 0],
+            hps_num_factors: 3,
+            magnitude_threshold: 1e-6,
         }
     }
 }
