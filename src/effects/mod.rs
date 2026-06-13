@@ -2,7 +2,10 @@ use libm::{expf, fabsf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, extract_simple_envelope, frequency_analysis},
+    dsp::{
+        FftOps, calculate_pitch_shift, extract_cepstral_envelope, extract_simple_envelope,
+        frequency_analysis,
+    },
 };
 
 /// Generic pitch correction processing (pitch correction)
@@ -59,8 +62,11 @@ where
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
     }
 
-    let fundamental_index =
-        frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer, config);
+    let fundamental_index = frequency_analysis::find_fundamental_frequency(
+        &analysis_magnitudes,
+        &mut hps_buffer,
+        config,
+    );
     let fundamental_frequency = analysis_frequencies[fundamental_index] * bin_width;
 
     // Calculate pitch shift
@@ -353,7 +359,6 @@ pub fn process_harmony_generic<const N: usize, const HALF_N: usize, F>(
 where
     F: FftOps<N, HALF_N>,
 {
-
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let bin_width = config.sample_rate / N as f32;
 
@@ -386,7 +391,11 @@ where
     // Extract formant envelope for more natural sound
     extract_simple_envelope::<HALF_N>(&analysis_magnitudes, &mut envelope);
 
-    let fundamental_bin = frequency_analysis::find_fundamental_frequency(&analysis_magnitudes, &mut hps_buffer, config);
+    let fundamental_bin = frequency_analysis::find_fundamental_frequency(
+        &analysis_magnitudes,
+        &mut hps_buffer,
+        config,
+    );
     let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
 
     // Zero synthesis arrays
@@ -396,10 +405,10 @@ where
     let mut voices = 0;
 
     // Add original voice
-    for i in 0..HALF_N {
-        synthesis_magnitudes[i] += analysis_magnitudes[i];
-        synthesis_frequencies[i] = analysis_frequencies[i];
+    for (s, &a) in synthesis_magnitudes[..HALF_N].iter_mut().zip(analysis_magnitudes.iter()) {
+        *s += a;
     }
+    synthesis_frequencies[..HALF_N].copy_from_slice(&analysis_frequencies[..HALF_N]);
     voices += 1;
 
     // Add pitch-shifted harmonies
@@ -436,8 +445,8 @@ where
 
     // Normalize by voice count to prevent clipping
     let normalization = 1.0 / voices as f32;
-    for i in 0..HALF_N {
-        synthesis_magnitudes[i] *= normalization;
+    for s in synthesis_magnitudes[..HALF_N].iter_mut() {
+        *s *= normalization;
     }
 
     // Synthesis phase reconstruction

@@ -40,15 +40,14 @@ pub fn find_fundamental_frequency(
     let max_bin = (config.max_frequency / bin_width) as usize;
     let min_bin = (config.min_frequency / bin_width).max(1.0) as usize;
 
-
     // Ensure we don't read past the input array
     let safe_max_bin = max_bin.min(analysis_magnitudes.len());
 
     // Find the maximum magnitude for normalization
     let mut max_mag = 0.0f32;
-    for i in min_bin..safe_max_bin {
-        if analysis_magnitudes[i] > max_mag {
-            max_mag = analysis_magnitudes[i];
+    for &mag in &analysis_magnitudes[min_bin..safe_max_bin] {
+        if mag > max_mag {
+            max_mag = mag;
         }
     }
 
@@ -62,14 +61,13 @@ pub fn find_fundamental_frequency(
     let inv_max_mag = 1.0 / max_mag;
 
     // Filtering out any data below the min hz and normalizing
-    for i in min_bin..safe_max_bin {
-        // Apply noise gate
-        if analysis_magnitudes[i] > noise_threshold {
-            // Copy spectrum within range and normalize to [0.0, 1.0]
-            harmonic_product_spectrum[i] = analysis_magnitudes[i] * inv_max_mag;
+    for (j, hps) in harmonic_product_spectrum[min_bin..safe_max_bin].iter_mut().enumerate() {
+        let mag = analysis_magnitudes[min_bin + j];
+        *hps = if mag > noise_threshold {
+            mag * inv_max_mag
         } else {
-            harmonic_product_spectrum[i] = 0.0;
-        }
+            0.0
+        };
     }
 
     // Multiply with downsampled versions
@@ -77,9 +75,9 @@ pub fn find_fundamental_frequency(
         // i*factor must be < safe_max_bin
         let limit = safe_max_bin / factor;
 
-        for i in min_bin..limit {
-            let harmonic_idx = i * factor;
-            harmonic_product_spectrum[i] *= analysis_magnitudes[harmonic_idx] * inv_max_mag;
+        for (j, hps) in harmonic_product_spectrum[min_bin..limit].iter_mut().enumerate() {
+            let harmonic_idx = (min_bin + j) * factor;
+            *hps *= analysis_magnitudes[harmonic_idx] * inv_max_mag;
         }
     }
 
@@ -87,10 +85,10 @@ pub fn find_fundamental_frequency(
     let mut max_val = 0.0;
     let mut best_bin = min_bin;
 
-    for i in min_bin..safe_max_bin {
-        if harmonic_product_spectrum[i] > max_val {
-            max_val = harmonic_product_spectrum[i];
-            best_bin = i;
+    for (j, &hps_val) in harmonic_product_spectrum[min_bin..safe_max_bin].iter().enumerate() {
+        if hps_val > max_val {
+            max_val = hps_val;
+            best_bin = min_bin + j;
         }
     }
 
@@ -314,7 +312,11 @@ mod detect_fun_freq_tests {
         let analysis_magnitudes = [0.0; 1024];
         let mut harmonic_product_spectrum = [0.0; 1024];
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         let bin_width = config.sample_rate / config.fft_size as f32;
         let min_bin = (config.min_frequency / bin_width).max(1.0) as usize;
@@ -332,7 +334,11 @@ mod detect_fun_freq_tests {
         analysis_magnitudes[PEAK_BIN * 2] = 0.5;
         analysis_magnitudes[PEAK_BIN * 3] = 0.3;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         assert!(
             result >= PEAK_BIN - 2 && result <= PEAK_BIN + 2,
@@ -354,7 +360,11 @@ mod detect_fun_freq_tests {
         analysis_magnitudes[VOCAL_BIN * 3] = 0.6;
         analysis_magnitudes[VOCAL_BIN * 4] = 0.4;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         let bin_width = config.sample_rate / config.fft_size as f32;
         let min_bin = (config.min_frequency / bin_width).max(1.0) as usize;
@@ -362,7 +372,9 @@ mod detect_fun_freq_tests {
         assert!(
             result >= min_bin && result <= max_bin,
             "Result {} should be in vocal range [{}, {}]",
-            result, min_bin, max_bin
+            result,
+            min_bin,
+            max_bin
         );
     }
 
@@ -381,7 +393,11 @@ mod detect_fun_freq_tests {
         analysis_magnitudes[SIGNAL_BIN * 2] = 0.7;
         analysis_magnitudes[SIGNAL_BIN * 3] = 0.5;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         assert!(
             result >= SIGNAL_BIN - 2 && result <= SIGNAL_BIN + 2,
@@ -403,7 +419,11 @@ mod detect_fun_freq_tests {
         analysis_magnitudes[FUNDAMENTAL * 3] = 0.6;
         analysis_magnitudes[FUNDAMENTAL * 4] = 0.4;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         assert!(
             result >= FUNDAMENTAL - 1 && result <= FUNDAMENTAL + 1,
@@ -411,10 +431,7 @@ mod detect_fun_freq_tests {
             FUNDAMENTAL,
             result
         );
-        assert!(
-            harmonic_product_spectrum[result] > 0.0,
-            "HPS at result should be non-zero"
-        );
+        assert!(harmonic_product_spectrum[result] > 0.0, "HPS at result should be non-zero");
     }
 
     #[test]
@@ -426,15 +443,15 @@ mod detect_fun_freq_tests {
         const HIGH_BIN: usize = 20;
         analysis_magnitudes[HIGH_BIN] = 1.0;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         let bin_width = config.sample_rate / config.fft_size as f32;
         let max_bin = (config.max_frequency / bin_width) as usize;
-        assert!(
-            result <= max_bin,
-            "Result {} should not exceed max_bin {}",
-            result, max_bin
-        );
+        assert!(result <= max_bin, "Result {} should not exceed max_bin {}", result, max_bin);
     }
 
     #[test]
@@ -443,7 +460,11 @@ mod detect_fun_freq_tests {
         let analysis_magnitudes = [0.5; 1024];
         let mut harmonic_product_spectrum = [0.0; 1024];
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         assert!(result < 1024, "Result should be within buffer bounds");
     }
@@ -465,7 +486,11 @@ mod detect_fun_freq_tests {
         analysis_magnitudes[STRONG_BIN * 2] = 8.0;
         analysis_magnitudes[STRONG_BIN * 3] = 6.0;
 
-        let result = find_fundamental_frequency(&analysis_magnitudes, &mut harmonic_product_spectrum, &config);
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
 
         assert!(
             result >= STRONG_BIN - 2 && result <= STRONG_BIN + 2,

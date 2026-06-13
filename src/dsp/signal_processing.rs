@@ -51,26 +51,22 @@ pub fn extract_simple_envelope<const HALF_N: usize>(
     analysis_magnitudes: &[f32; HALF_N],
     envelope: &mut [f32; HALF_N],
 ) {
-    const SMOOTH_BINS: usize = 8;  // Small window for speed
-    
-    for i in 0..HALF_N {
+    const SMOOTH_BINS: usize = 8; // Small window for speed
+
+    for (i, slot) in envelope.iter_mut().enumerate() {
         let start = i.saturating_sub(SMOOTH_BINS);
         let end = (i + SMOOTH_BINS + 1).min(HALF_N);
-        
-        let mut sum = 0.0;
-        for j in start..end {
-            sum += analysis_magnitudes[j];
-        }
-        envelope[i] = sum / (end - start) as f32;
+        let sum: f32 = analysis_magnitudes[start..end].iter().sum();
+        *slot = sum / (end - start) as f32;
     }
 }
 
 pub fn calculate_pitch_shift(
-    analysis_magnitudes: &[f32],
-    analysis_frequencies: &[f32],
+    _analysis_magnitudes: &[f32],
+    _analysis_frequencies: &[f32],
     previous_pitch_shift_ratio: f32,
     settings: &MusicalSettings,
-    bin_width: f32,
+    _bin_width: f32,
     fundamental_frequency: f32,
 ) -> f32 {
     let mut pitch_shift_ratio = previous_pitch_shift_ratio;
