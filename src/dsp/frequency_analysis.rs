@@ -341,7 +341,7 @@ mod detect_fun_freq_tests {
         );
 
         assert!(
-            result >= PEAK_BIN - 2 && result <= PEAK_BIN + 2,
+            (PEAK_BIN - 2..=PEAK_BIN + 2).contains(&result),
             "Should detect fundamental near bin {}, got {}",
             PEAK_BIN,
             result
@@ -384,9 +384,7 @@ mod detect_fun_freq_tests {
         let mut analysis_magnitudes = [0.0; 1024];
         let mut harmonic_product_spectrum = [0.0; 1024];
 
-        for i in 0..1024 {
-            analysis_magnitudes[i] = 0.05;
-        }
+        analysis_magnitudes.fill(0.05);
 
         const SIGNAL_BIN: usize = 4;
         analysis_magnitudes[SIGNAL_BIN] = 1.0;
@@ -400,7 +398,7 @@ mod detect_fun_freq_tests {
         );
 
         assert!(
-            result >= SIGNAL_BIN - 2 && result <= SIGNAL_BIN + 2,
+            (SIGNAL_BIN - 2..=SIGNAL_BIN + 2).contains(&result),
             "Should detect signal at bin {}, got {}",
             SIGNAL_BIN,
             result
@@ -426,7 +424,7 @@ mod detect_fun_freq_tests {
         );
 
         assert!(
-            result >= FUNDAMENTAL - 1 && result <= FUNDAMENTAL + 1,
+            (FUNDAMENTAL - 1..=FUNDAMENTAL + 1).contains(&result),
             "HPS should identify fundamental at bin {}, got {}",
             FUNDAMENTAL,
             result
@@ -493,7 +491,7 @@ mod detect_fun_freq_tests {
         );
 
         assert!(
-            result >= STRONG_BIN - 2 && result <= STRONG_BIN + 2,
+            (STRONG_BIN - 2..=STRONG_BIN + 2).contains(&result),
             "Should detect strong harmonic at bin {}, got {}",
             STRONG_BIN,
             result
