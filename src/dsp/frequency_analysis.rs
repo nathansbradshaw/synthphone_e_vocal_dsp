@@ -1,6 +1,6 @@
 use core::f32::consts::PI;
 
-use libm::{atan2f, cosf, fabsf, floorf, fmodf, roundf, sinf, sqrtf};
+use libm::{atan2f, cosf, floorf, fmodf, roundf, sinf, sqrtf};
 
 use crate::audio::find_nearest_note_frequency;
 
@@ -140,7 +140,7 @@ pub fn bitcrush(sample: f32, bit_depth: i8) -> f32 {
 
 #[inline(always)]
 pub fn normalize_sample(sample: f32, target_peak: f32) -> f32 {
-    let abs_sample = fabsf(sample);
+    let abs_sample = sample.abs();
     if abs_sample > target_peak {
         // Scale the sample down to target_peak while preserving its sign.
         sample * (target_peak / abs_sample)

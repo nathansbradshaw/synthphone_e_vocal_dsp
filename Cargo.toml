@@ -18,6 +18,7 @@ formant-shifting = ["cepstral-smoothing"]
 debug-logging = []
 
 [dependencies]
+micromath = { version = "2.1", default-features = false }
 libm = "0.2.8"
 microfft = "0.6"
 

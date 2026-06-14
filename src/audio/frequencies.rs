@@ -1,5 +1,3 @@
-use libm::fabsf;
-
 pub const C_MAJOR_SCALE_STEPS: [usize; 7] = [0, 2, 4, 5, 7, 9, 11];
 pub const MAX_OCTAVES: usize = 10;
 
@@ -139,11 +137,11 @@ pub const FREQUENCIES: [&[f32]; 24] = [
 
 pub fn find_nearest_note_frequency(input_frequency: f32) -> f32 {
     let mut nearest_frequency = C_MAJOR_SCALE_FREQUENCIES[0];
-    let mut min_difference = fabsf(input_frequency - nearest_frequency);
+    let mut min_difference = (input_frequency - nearest_frequency).abs();
 
     for &scale in &FREQUENCIES {
         for &frequency in scale {
-            let difference = fabsf(input_frequency - frequency);
+            let difference = (input_frequency - frequency).abs();
             if difference < min_difference {
                 min_difference = difference;
                 nearest_frequency = frequency;
@@ -156,10 +154,10 @@ pub fn find_nearest_note_frequency(input_frequency: f32) -> f32 {
 
 pub fn find_nearest_note_in_key(input_frequency: f32, key_frequencies: &[f32]) -> f32 {
     let mut nearest_frequency = key_frequencies[0];
-    let mut min_difference = fabsf(input_frequency - nearest_frequency);
+    let mut min_difference = (input_frequency - nearest_frequency).abs();
 
     for &frequency in key_frequencies {
-        let difference = fabsf(input_frequency - frequency);
+        let difference = (input_frequency - frequency).abs();
         if difference < min_difference {
             min_difference = difference;
             nearest_frequency = frequency;
