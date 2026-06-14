@@ -34,10 +34,7 @@ impl Oscillator {
         }
 
         match self.waveform {
-            Waveform::Sine => {
-                // Optional: precompute a sine table for no_std
-                libm::sinf(2.0 * core::f32::consts::PI * self.phase)
-            }
+            Waveform::Sine => libm::sinf(2.0 * core::f32::consts::PI * self.phase),
             Waveform::Saw => 2.0 * self.phase - 1.0,
             Waveform::Square => {
                 if self.phase < 0.5 {
@@ -46,7 +43,7 @@ impl Oscillator {
                     -1.0
                 }
             }
-            Waveform::Triangle => 4.0 * libm::fabsf(self.phase - 0.5) - 1.0,
+            Waveform::Triangle => 4.0 * (self.phase - 0.5).abs() - 1.0,
         }
     }
 }

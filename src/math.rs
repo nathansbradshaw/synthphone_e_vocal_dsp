@@ -1,6 +1,6 @@
 //! Mathematical utilities
 
-use libm::{expf, fabsf};
+use libm::expf;
 
 /// Clamp a value between min and max
 #[inline(always)]
@@ -27,7 +27,7 @@ pub fn is_power_of_two(n: usize) -> bool {
 }
 
 pub fn normalize_sample(sample: f32, target_peak: f32) -> f32 {
-    let abs_sample = fabsf(sample);
+    let abs_sample = sample.abs();
     if abs_sample > target_peak {
         // Soft limiting to prevent harsh clipping
         let ratio = target_peak / abs_sample;

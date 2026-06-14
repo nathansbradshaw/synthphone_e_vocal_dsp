@@ -1,4 +1,4 @@
-use libm::{expf, fabsf, floorf, sqrtf};
+use libm::{expf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
@@ -136,7 +136,7 @@ where
         sample *= analysis_window_buffer[i];
         if sample.abs() > 0.95 {
             let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
-            let compressed = 0.95 - 0.05 * expf(-fabsf(sample));
+            let compressed = 0.95 - 0.05 * expf(-sample.abs());
             sample = sign * compressed;
         }
         output_samples[i] = sample;
@@ -469,7 +469,7 @@ where
         // Optional: soft clipping for safety
         if sample.abs() > 0.95 {
             let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
-            let compressed = 0.95 - 0.05 * expf(-fabsf(sample));
+            let compressed = 0.95 - 0.05 * expf(-sample.abs());
             sample = sign * compressed;
         }
 
