@@ -3,7 +3,7 @@ use libm::{expf, floorf, sqrtf};
 use crate::{
     MusicalSettings, VocalEffectsConfig,
     dsp::{
-        FftOps, calculate_pitch_shift, extract_cepstral_envelope, extract_simple_envelope,
+        FftOps, calculate_pitch_shift, extract_cepstral_envelope,
         frequency_analysis,
     },
 };
@@ -360,7 +360,6 @@ where
     F: FftOps<N, HALF_N>,
 {
     let hop_size = (N as f32 * config.hop_ratio) as usize;
-    let bin_width = config.sample_rate / N as f32;
 
     let analysis_window_buffer = F::get_hann_window();
     let mut full_spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
@@ -368,8 +367,32 @@ where
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
-    let mut envelope = [1.0f32; HALF_N];
-    let mut hps_buffer = [1.0f32; HALF_N];
+
+    // ── YIN pitch detection (must run before windowing modifies the buffer) ──
+    // last_input_phases[HALF_N + 1] lies beyond the rfft output length
+    // (HALF_N + 1 values at 0..=HALF_N) and is never touched by
+    // perform_phase_vocoder_analysis.  We repurpose it as one f32 of persistent
+    // state — the previous frame's detected frequency — for the octave-snap below.
+    let prev_input_freq = last_input_phases[HALF_N + 1];
+    let raw_input_freq = frequency_analysis::find_pitch_yin(unwrapped_buffer, config);
+
+    // Octave-snap: YIN occasionally finds the half-period (2× the true
+    // fundamental) on frames with a very prominent 2nd harmonic.  Guard against
+    // this by folding back any jump of approximately one octave relative to the
+    // previous stable estimate.
+    let input_freq = if prev_input_freq > 0.0 && raw_input_freq > 0.0 {
+        let ratio = raw_input_freq / prev_input_freq;
+        if ratio > 1.65 && ratio < 2.5 {
+            raw_input_freq * 0.5 // half-period error — fold down
+        } else if ratio > 0.38 && ratio < 0.6 {
+            raw_input_freq * 2.0 // double-period error — fold up
+        } else {
+            raw_input_freq
+        }
+    } else {
+        raw_input_freq
+    };
+    last_input_phases[HALF_N + 1] = if input_freq > 0.0 { input_freq } else { prev_input_freq };
 
     // Apply windowing
     for i in 0..N {
@@ -388,57 +411,59 @@ where
         hop_size,
     );
 
-    // Extract formant envelope for more natural sound
-    extract_simple_envelope::<HALF_N>(&analysis_magnitudes, &mut envelope);
-
-    let fundamental_bin = frequency_analysis::find_fundamental_frequency(
-        &analysis_magnitudes,
-        &mut hps_buffer,
-        config,
-    );
-    let input_freq = analysis_frequencies[fundamental_bin] * bin_width;
-
     // Zero synthesis arrays
     synthesis_magnitudes.fill(0.0);
     synthesis_frequencies.fill(0.0);
 
     let mut voices = 0;
 
-    // Add original voice
+    // Add original voice (maps every bin i → i, so frequencies are copied directly)
     for (s, &a) in synthesis_magnitudes[..HALF_N].iter_mut().zip(analysis_magnitudes.iter()) {
         *s += a;
     }
     synthesis_frequencies[..HALF_N].copy_from_slice(&analysis_frequencies[..HALF_N]);
     voices += 1;
 
-    // Add pitch-shifted harmonies
-    for &frequency in settings.midi_frequencies.iter() {
-        if frequency == 0.0 {
-            continue;
-        }
-
-        voices += 1;
-
-        let shift_ratio = frequency / input_freq;
-
-        for i in 0..HALF_N {
-            if analysis_magnitudes[i] <= config.magnitude_threshold {
+    // Only add harmonies when the fundamental is detectable
+    if input_freq > 0.001 {
+        for &frequency in settings.midi_frequencies.iter() {
+            if frequency == 0.0 {
                 continue;
             }
 
-            // Calculate new bin position for this harmony
-            let new_bin_f = i as f32 * shift_ratio;
-            let new_bin = floorf(new_bin_f + 0.5) as usize;
+            voices += 1;
+            let shift_ratio = frequency / input_freq;
 
-            if new_bin < HALF_N {
-                // Initial spectral envelope position
-                let preserved_envelope = envelope[i];
+            for i in 0..HALF_N {
+                if analysis_magnitudes[i] <= config.magnitude_threshold {
+                    continue;
+                }
 
-                // Accumulate magnitude for this harmony voice
-                synthesis_magnitudes[new_bin] += analysis_magnitudes[i] * preserved_envelope;
+                // Linearly interpolate energy across two adjacent bins to avoid comb-filter
+                // holes that occur with nearest-neighbor rounding at high shift ratios.
+                let new_bin_f = i as f32 * shift_ratio;
+                let bin_lo = floorf(new_bin_f) as usize;
+                let frac = new_bin_f - bin_lo as f32;
 
-                // For harmonies, we can just use the shifted frequency
-                synthesis_frequencies[new_bin] = analysis_frequencies[i] * shift_ratio;
+                if bin_lo < HALF_N {
+                    let harmony_mag = analysis_magnitudes[i] * (1.0 - frac);
+                    // Harmony owns the synthesis frequency only when it contributes
+                    // more energy than the original voice at this bin, preventing
+                    // harmony writes from corrupting the original's phase accumulation.
+                    if harmony_mag > analysis_magnitudes[bin_lo] {
+                        synthesis_frequencies[bin_lo] = analysis_frequencies[i] * shift_ratio;
+                    }
+                    synthesis_magnitudes[bin_lo] += harmony_mag;
+                }
+
+                let bin_hi = bin_lo + 1;
+                if bin_hi < HALF_N {
+                    let harmony_mag = analysis_magnitudes[i] * frac;
+                    if harmony_mag > analysis_magnitudes[bin_hi] {
+                        synthesis_frequencies[bin_hi] = analysis_frequencies[i] * shift_ratio;
+                    }
+                    synthesis_magnitudes[bin_hi] += harmony_mag;
+                }
             }
         }
     }
@@ -466,7 +491,6 @@ where
         let mut sample = time_domain_result[i].re;
         sample *= analysis_window_buffer[i];
 
-        // Optional: soft clipping for safety
         if sample.abs() > 0.95 {
             let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
             let compressed = 0.95 - 0.05 * expf(-sample.abs());
@@ -477,4 +501,173 @@ where
     }
 
     output_samples
+}
+
+/// Harmony generation with formant preservation via a cached spectral envelope.
+///
+/// `cached_envelope` and `cached_inv_envelope` are RTIC local resources that
+/// persist across hops.  The envelope is recomputed every ENVELOPE_UPDATE_PERIOD
+/// hops (~85 ms at the 187 Hz hop rate) so the per-hop overhead is bounded to
+/// the harmony-loop multiplies rather than a full envelope recompute each frame.
+///
+/// The hop counter is stashed in `last_input_phases[HALF_N + 2]`, which lies
+/// beyond both the rfft output range (0..=HALF_N) and the YIN slot (HALF_N + 1).
+pub fn process_harmony_generic_with_formant<const N: usize, const HALF_N: usize, F>(
+    unwrapped_buffer: &mut [f32; N],
+    last_input_phases: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    cached_envelope: &mut [f32; HALF_N],
+    cached_inv_envelope: &mut [f32; HALF_N],
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N]
+where
+    F: FftOps<N, HALF_N>,
+{
+    let hop_size = (N as f32 * config.hop_ratio) as usize;
+
+    let analysis_window_buffer = F::get_hann_window();
+    let mut full_spectrum: [microfft::Complex32; N] = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
+    let mut analysis_magnitudes = [0.0; HALF_N];
+    let mut analysis_frequencies = [0.0; HALF_N];
+    let mut synthesis_magnitudes = [0.0; N];
+    let mut synthesis_frequencies = [0.0; N];
+
+    // YIN pitch detection — must run before windowing modifies the buffer.
+    let prev_input_freq = last_input_phases[HALF_N + 1];
+    let raw_input_freq = frequency_analysis::find_pitch_yin(unwrapped_buffer, config);
+
+    let input_freq = if prev_input_freq > 0.0 && raw_input_freq > 0.0 {
+        let ratio = raw_input_freq / prev_input_freq;
+        if ratio > 1.65 && ratio < 2.5 {
+            raw_input_freq * 0.5
+        } else if ratio > 0.38 && ratio < 0.6 {
+            raw_input_freq * 2.0
+        } else {
+            raw_input_freq
+        }
+    } else {
+        raw_input_freq
+    };
+    last_input_phases[HALF_N + 1] = if input_freq > 0.0 { input_freq } else { prev_input_freq };
+
+    for i in 0..N {
+        unwrapped_buffer[i] *= analysis_window_buffer[i];
+    }
+
+    let fft_result = F::forward_fft(unwrapped_buffer);
+    frequency_analysis::perform_phase_vocoder_analysis::<N, HALF_N>(
+        fft_result,
+        last_input_phases,
+        &mut analysis_magnitudes,
+        &mut analysis_frequencies,
+        hop_size,
+    );
+
+    synthesis_magnitudes.fill(0.0);
+    synthesis_frequencies.fill(0.0);
+
+    // Refresh the cached envelope every ENVELOPE_UPDATE_PERIOD hops (~85 ms).
+    // The counter lives at last_input_phases[HALF_N + 2] — unused by everything else.
+    const ENVELOPE_UPDATE_PERIOD: u8 = 16;
+    {
+        let hop_count = last_input_phases[HALF_N + 2] as u8;
+        last_input_phases[HALF_N + 2] = ((hop_count + 1) % ENVELOPE_UPDATE_PERIOD) as f32;
+
+        if hop_count == 0 {
+            const ENV_W: usize = 16;
+            let init_hi = ENV_W.min(HALF_N - 1);
+            let mut sum: f32 = analysis_magnitudes[..=init_hi].iter().copied().sum();
+            let mut lo = 0usize;
+            let mut hi = init_hi;
+            for i in 0..HALF_N {
+                cached_envelope[i] = sum / (hi - lo + 1) as f32;
+                if hi + 1 < HALF_N { hi += 1; sum += analysis_magnitudes[hi]; }
+                if lo + ENV_W < i + 1 { sum -= analysis_magnitudes[lo]; lo += 1; }
+            }
+            for i in 0..HALF_N {
+                cached_inv_envelope[i] = 1.0 / cached_envelope[i].max(1e-6_f32);
+            }
+        }
+    }
+
+    let mut voices = 0;
+
+    for (s, &a) in synthesis_magnitudes[..HALF_N].iter_mut().zip(analysis_magnitudes.iter()) {
+        *s += a;
+    }
+    synthesis_frequencies[..HALF_N].copy_from_slice(&analysis_frequencies[..HALF_N]);
+    voices += 1;
+
+    if input_freq > 0.001 {
+        for &frequency in settings.midi_frequencies.iter() {
+            if frequency == 0.0 {
+                continue;
+            }
+
+            voices += 1;
+            let shift_ratio = frequency / input_freq;
+
+            for i in 0..HALF_N {
+                if analysis_magnitudes[i] <= config.magnitude_threshold {
+                    continue;
+                }
+
+                // Source-filter decomposition: strip the formant at the source bin,
+                // reapply it at the destination bin so vowel resonances stay fixed
+                // while the harmonic skeleton shifts to the target pitch.
+                let residual = analysis_magnitudes[i] * cached_inv_envelope[i];
+
+                let new_bin_f = i as f32 * shift_ratio;
+                let bin_lo = floorf(new_bin_f) as usize;
+                let frac = new_bin_f - bin_lo as f32;
+
+                if bin_lo < HALF_N {
+                    let harmony_mag = residual * cached_envelope[bin_lo] * (1.0 - frac);
+                    if harmony_mag > analysis_magnitudes[bin_lo] {
+                        synthesis_frequencies[bin_lo] = analysis_frequencies[i] * shift_ratio;
+                    }
+                    synthesis_magnitudes[bin_lo] += harmony_mag;
+                }
+
+                let bin_hi = bin_lo + 1;
+                if bin_hi < HALF_N {
+                    let harmony_mag = residual * cached_envelope[bin_hi] * frac;
+                    if harmony_mag > analysis_magnitudes[bin_hi] {
+                        synthesis_frequencies[bin_hi] = analysis_frequencies[i] * shift_ratio;
+                    }
+                    synthesis_magnitudes[bin_hi] += harmony_mag;
+                }
+            }
+        }
+    }
+
+    let normalization = 1.0 / voices as f32;
+    for s in synthesis_magnitudes[..HALF_N].iter_mut() {
+        *s *= normalization;
+    }
+
+    frequency_analysis::perform_phase_vocoder_synthesis::<N>(
+        &mut synthesis_magnitudes,
+        &mut synthesis_frequencies,
+        last_output_phases,
+        &mut full_spectrum,
+        hop_size,
+    );
+
+    let time_domain_result = F::inverse_fft(&mut full_spectrum);
+    let mut output_samples_f = [0.0f32; N];
+
+    for i in 0..N {
+        let mut sample = time_domain_result[i].re;
+        sample *= analysis_window_buffer[i];
+        if sample.abs() > 0.95 {
+            let sign = if sample >= 0.0 { 1.0 } else { -1.0 };
+            let compressed = 0.95 - 0.05 * expf(-sample.abs());
+            sample = sign * compressed;
+        }
+        output_samples_f[i] = sample;
+    }
+
+    output_samples_f
 }

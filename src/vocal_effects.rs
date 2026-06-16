@@ -7,8 +7,8 @@ use crate::{
     MusicalSettings, ProcessingMode, VocalEffectsConfig,
     dsp::{Fft512, Fft1024, Fft2048, Fft4096, FftOps},
     effects::{
-        process_dry_generic, process_harmony_generic, process_pitch_correction_generic,
-        process_vocode_generic,
+        process_dry_generic, process_harmony_generic, process_harmony_generic_with_formant,
+        process_pitch_correction_generic, process_vocode_generic,
     },
 };
 
@@ -81,25 +81,41 @@ pub fn process_vocal_effects_512(
     )
 }
 
-/// Specialized vocal effects function for 1024-point FFT
+/// Specialized vocal effects function for 1024-point FFT.
+/// In Harmony mode, `cached_harmony_envelope` and `cached_harmony_inv_envelope`
+/// are RTIC locals that persist the spectral envelope across hops.
 pub fn process_vocal_effects_1024(
     unwrapped_buffer: &mut [f32; 1024],
     carrier_buffer: Option<&mut [f32; 1024]>,
     last_input_phases: &mut [f32; 1024],
     last_output_phases: &mut [f32; 1024],
+    cached_harmony_envelope: &mut [f32; 512],
+    cached_harmony_inv_envelope: &mut [f32; 512],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
 ) -> [f32; 1024] {
-    process_vocal_effects::<1024, 512, Fft1024>(
-        unwrapped_buffer,
-        carrier_buffer,
-        last_input_phases,
-        last_output_phases,
-        previous_pitch_shift_ratio,
-        config,
-        settings,
-    )
+    if settings.mode == ProcessingMode::Harmony {
+        process_harmony_generic_with_formant::<1024, 512, Fft1024>(
+            unwrapped_buffer,
+            last_input_phases,
+            last_output_phases,
+            cached_harmony_envelope,
+            cached_harmony_inv_envelope,
+            config,
+            settings,
+        )
+    } else {
+        process_vocal_effects::<1024, 512, Fft1024>(
+            unwrapped_buffer,
+            carrier_buffer,
+            last_input_phases,
+            last_output_phases,
+            previous_pitch_shift_ratio,
+            config,
+            settings,
+        )
+    }
 }
 
 /// Specialized vocal effects function for 2048-point FFT

@@ -92,7 +92,172 @@ pub fn find_fundamental_frequency(
         }
     }
 
+    // Sub-octave disambiguation: HPS is biased toward harmonics — on bright or
+    // breathy voices it frequently peaks at 2× or 3× the true fundamental because
+    // those harmonics are stronger than the fundamental itself.  If the sub-octave
+    // (or sub-third) of the detected bin carries clear spectral energy, the actual
+    // fundamental is likely down there.  One correction step handles the most common
+    // cases without risking runaway descent on legitimate mid-range fundamentals.
+    for &divisor in &[2usize, 3usize] {
+        let lower_bin = best_bin / divisor;
+        if lower_bin >= min_bin && analysis_magnitudes[lower_bin] > noise_threshold {
+            best_bin = lower_bin;
+            break;
+        }
+    }
+
     best_bin
+}
+
+/// YIN-based monophonic pitch detection in the time domain.
+///
+/// Returns the estimated fundamental frequency in Hz, or 0.0 when the signal
+/// is silent or insufficiently periodic.
+///
+/// Internally decimates the input by 8× (yielding ~6 kHz effective sample rate)
+/// so the inner-loop work is ~6 K multiply-adds (~0.06 ms on M7 @ 480 MHz).
+/// Vocal coverage: 80–600 Hz (full male range, most of female range).
+///
+/// The algorithm follows the YIN paper (de Cheveigné & Kawahara, 2002):
+///   1. Compute the difference function d[τ] = Σ (x[j] − x[j+τ])²
+///   2. Normalise into the Cumulative Mean Normalised Difference (CMNDF):
+///      d′[τ] = d[τ] · τ / Σ_{j=1}^{τ} d[j]
+///   3. Find the first τ where d′[τ] < THRESHOLD (0.15) and return fs/τ.
+///   4. If no crossing is found, return the τ with the global minimum (or 0.0
+///      if that minimum is too high, indicating no detectable pitch).
+///   5. Refine with parabolic interpolation for sub-sample lag accuracy.
+#[inline(always)]
+pub fn find_pitch_yin(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 {
+    // 8× decimation: effective rate ≈ 6 kHz, 128-sample buffer.
+    // Reduces inner-loop work 4× vs. the 4× variant while still covering
+    // the full singing range 80–600 Hz.
+    const DECIMATION: usize = 8;
+    const DEC_BUF: usize = 128; // 1024 / 8
+
+    // Intentionally narrower than config.min/max_frequency (those drive HPS).
+    // max_lag = 6000/80 ≈ 75 ≤ DEC_BUF/2, ensuring a full period of signal
+    // is always available for the inner window at the longest lag.
+    const MIN_VOCAL_HZ: f32 = 80.0;
+    const MAX_VOCAL_HZ: f32 = 600.0;
+
+    // Aperiodicity threshold: d′[τ] < THRESHOLD → accept as pitch.
+    // 0.15 is the value recommended in the YIN paper for noisy conditions.
+    const THRESHOLD: f32 = 0.15;
+
+    let effective_sr = config.sample_rate / DECIMATION as f32;
+    let n_dec = (x.len() / DECIMATION).min(DEC_BUF);
+
+    let min_lag = (effective_sr / MAX_VOCAL_HZ).max(1.0) as usize;
+    let max_lag = ((effective_sr / MIN_VOCAL_HZ) as usize).min(n_dec.saturating_sub(2));
+
+    if min_lag >= max_lag {
+        return 0.0;
+    }
+
+    // Build decimated signal (4× decimation, no explicit anti-alias filter;
+    // vocal energy above the 6 kHz alias boundary is negligible in practice).
+    let mut xd = [0.0f32; DEC_BUF];
+    for i in 0..n_dec {
+        xd[i] = x[i * DECIMATION];
+    }
+
+    // Silence gate
+    let mut energy = 0.0f32;
+    for &s in &xd[..n_dec] {
+        energy += s * s;
+    }
+    if energy < 1e-8 {
+        return 0.0;
+    }
+
+    // ── Step 2: CMNDF ──────────────────────────────────────────────────────────
+    // Pre-fill running_sum with d[1..min_lag) so the normalisation is correct
+    // when we enter the search range at tau = min_lag.
+    let mut running_sum = 0.0f32;
+    for tau in 1..min_lag {
+        let window = n_dec - tau;
+        let mut d = 0.0f32;
+        for j in 0..window {
+            let diff = xd[j] - xd[j + tau];
+            d += diff * diff;
+        }
+        running_sum += d;
+    }
+
+    let mut best_tau = min_lag;
+    let mut best_d_prime = 2.0f32; // above any normalised value
+
+    for tau in min_lag..=max_lag {
+        let window = n_dec - tau;
+        let mut d_tau = 0.0f32;
+        for j in 0..window {
+            let diff = xd[j] - xd[j + tau];
+            d_tau += diff * diff;
+        }
+        running_sum += d_tau;
+
+        // d′[τ] = d[τ] · τ / Σ_{j=1}^{τ} d[j]
+        let d_prime = if running_sum > 1e-10 {
+            d_tau * tau as f32 / running_sum
+        } else {
+            1.0
+        };
+
+        if d_prime < THRESHOLD {
+            // ── Step 3: first below-threshold crossing ─────────────────────
+            best_tau = tau;
+            best_d_prime = d_prime;
+            break;
+        }
+
+        // Track global minimum as fallback (Step 4)
+        if d_prime < best_d_prime {
+            best_d_prime = d_prime;
+            best_tau = tau;
+        }
+    }
+
+    // Step 4 fallback rejection: if even the global minimum is aperiodic, give up.
+    if best_d_prime > 0.5 {
+        return 0.0;
+    }
+
+    // ── Step 5: parabolic interpolation ────────────────────────────────────────
+    // Refine the integer best_tau by fitting a parabola through d[τ-1], d[τ], d[τ+1].
+    // Minimum of f(x)=ax²+bx+c at x = -b/2a = (d0-d2)/(2*(2*d1-d0-d2)).
+    let tau_f = if best_tau > min_lag && best_tau < max_lag {
+        let t0 = best_tau - 1;
+        let t1 = best_tau;
+        let t2 = best_tau + 1;
+
+        let mut d0 = 0.0f32;
+        for j in 0..(n_dec - t0) {
+            let diff = xd[j] - xd[j + t0];
+            d0 += diff * diff;
+        }
+        let mut d1 = 0.0f32;
+        for j in 0..(n_dec - t1) {
+            let diff = xd[j] - xd[j + t1];
+            d1 += diff * diff;
+        }
+        let mut d2 = 0.0f32;
+        for j in 0..(n_dec - t2) {
+            let diff = xd[j] - xd[j + t2];
+            d2 += diff * diff;
+        }
+
+        // denom = 2·d1 - d0 - d2 = −2a; correction = (d0−d2)/(−2·denom) = −(d0−d2)/(2·denom)
+        let denom = 2.0 * d1 - d0 - d2;
+        if denom.abs() > 1e-10 {
+            (best_tau as f32 - (d0 - d2) / (2.0 * denom)).max(1.0)
+        } else {
+            best_tau as f32
+        }
+    } else {
+        best_tau as f32
+    };
+
+    effective_sr / tau_f
 }
 
 #[inline(always)]
@@ -495,6 +660,36 @@ mod detect_fun_freq_tests {
             "Should detect strong harmonic at bin {}, got {}",
             STRONG_BIN,
             result
+        );
+    }
+
+    // Verify sub-octave disambiguation: when HPS peaks at 2× the true fundamental
+    // (because the 2nd harmonic is dominant — common on bright/breathy voices), the
+    // detected bin should be corrected back to the fundamental.
+    #[test]
+    fn test_octave_disambiguation_2x() {
+        let config = test_config();
+        let mut analysis_magnitudes = [0.0; 1024];
+        let mut harmonic_product_spectrum = [0.0; 1024];
+
+        // True fundamental at bin 4 (~188 Hz), but 2nd harmonic is 3× stronger,
+        // which would normally fool HPS into picking bin 8.
+        const TRUE_FUNDAMENTAL: usize = 4;
+        analysis_magnitudes[TRUE_FUNDAMENTAL] = 0.5;       // fundamental — present but weaker
+        analysis_magnitudes[TRUE_FUNDAMENTAL * 2] = 1.0;   // 2nd harmonic — dominant
+        analysis_magnitudes[TRUE_FUNDAMENTAL * 3] = 0.7;
+        analysis_magnitudes[TRUE_FUNDAMENTAL * 4] = 0.4;
+
+        let result = find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut harmonic_product_spectrum,
+            &config,
+        );
+
+        assert_eq!(
+            result, TRUE_FUNDAMENTAL,
+            "Sub-octave disambiguation should recover fundamental bin {}, got {}",
+            TRUE_FUNDAMENTAL, result
         );
     }
 }
