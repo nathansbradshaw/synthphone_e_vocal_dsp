@@ -119,10 +119,10 @@ pub fn find_fundamental_frequency(
 /// Vocal coverage: 80–600 Hz (full male range, most of female range).
 ///
 /// The algorithm follows the YIN paper (de Cheveigné & Kawahara, 2002):
-///   1. Compute the difference function d[τ] = Σ (x[j] − x[j+τ])²
+///   1. Compute the difference function `d[τ]` = Σ (x\[j\] − x\[j+τ\])²
 ///   2. Normalise into the Cumulative Mean Normalised Difference (CMNDF):
-///      d′[τ] = d[τ] · τ / Σ_{j=1}^{τ} d[j]
-///   3. Find the first τ where d′[τ] < THRESHOLD (0.15) and return fs/τ.
+///      `d′[τ]` = `d[τ]` · τ / Σ_{j=1}^{τ} `d[j]`
+///   3. Find the first τ where `d′[τ]` < THRESHOLD (0.15) and return fs/τ.
 ///   4. If no crossing is found, return the τ with the global minimum (or 0.0
 ///      if that minimum is too high, indicating no detectable pitch).
 ///   5. Refine with parabolic interpolation for sub-sample lag accuracy.
@@ -675,8 +675,8 @@ mod detect_fun_freq_tests {
         // True fundamental at bin 4 (~188 Hz), but 2nd harmonic is 3× stronger,
         // which would normally fool HPS into picking bin 8.
         const TRUE_FUNDAMENTAL: usize = 4;
-        analysis_magnitudes[TRUE_FUNDAMENTAL] = 0.5;       // fundamental — present but weaker
-        analysis_magnitudes[TRUE_FUNDAMENTAL * 2] = 1.0;   // 2nd harmonic — dominant
+        analysis_magnitudes[TRUE_FUNDAMENTAL] = 0.5; // fundamental — present but weaker
+        analysis_magnitudes[TRUE_FUNDAMENTAL * 2] = 1.0; // 2nd harmonic — dominant
         analysis_magnitudes[TRUE_FUNDAMENTAL * 3] = 0.7;
         analysis_magnitudes[TRUE_FUNDAMENTAL * 4] = 0.4;
 

@@ -2,10 +2,7 @@ use libm::{expf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{
-        FftOps, calculate_pitch_shift, extract_cepstral_envelope,
-        frequency_analysis,
-    },
+    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
 };
 
 /// Generic pitch correction processing (pitch correction)
@@ -392,7 +389,11 @@ where
     } else {
         raw_input_freq
     };
-    last_input_phases[HALF_N + 1] = if input_freq > 0.0 { input_freq } else { prev_input_freq };
+    last_input_phases[HALF_N + 1] = if input_freq > 0.0 {
+        input_freq
+    } else {
+        prev_input_freq
+    };
 
     // Apply windowing
     for i in 0..N {
@@ -549,7 +550,11 @@ where
     } else {
         raw_input_freq
     };
-    last_input_phases[HALF_N + 1] = if input_freq > 0.0 { input_freq } else { prev_input_freq };
+    last_input_phases[HALF_N + 1] = if input_freq > 0.0 {
+        input_freq
+    } else {
+        prev_input_freq
+    };
 
     for i in 0..N {
         unwrapped_buffer[i] *= analysis_window_buffer[i];
@@ -580,10 +585,17 @@ where
             let mut sum: f32 = analysis_magnitudes[..=init_hi].iter().copied().sum();
             let mut lo = 0usize;
             let mut hi = init_hi;
+            #[allow(clippy::needless_range_loop)]
             for i in 0..HALF_N {
                 cached_envelope[i] = sum / (hi - lo + 1) as f32;
-                if hi + 1 < HALF_N { hi += 1; sum += analysis_magnitudes[hi]; }
-                if lo + ENV_W < i + 1 { sum -= analysis_magnitudes[lo]; lo += 1; }
+                if hi + 1 < HALF_N {
+                    hi += 1;
+                    sum += analysis_magnitudes[hi];
+                }
+                if lo + ENV_W < i + 1 {
+                    sum -= analysis_magnitudes[lo];
+                    lo += 1;
+                }
             }
             for i in 0..HALF_N {
                 cached_inv_envelope[i] = 1.0 / cached_envelope[i].max(1e-6_f32);

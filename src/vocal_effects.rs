@@ -84,6 +84,7 @@ pub fn process_vocal_effects_512(
 /// Specialized vocal effects function for 1024-point FFT.
 /// In Harmony mode, `cached_harmony_envelope` and `cached_harmony_inv_envelope`
 /// are RTIC locals that persist the spectral envelope across hops.
+#[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_1024(
     unwrapped_buffer: &mut [f32; 1024],
     carrier_buffer: Option<&mut [f32; 1024]>,
