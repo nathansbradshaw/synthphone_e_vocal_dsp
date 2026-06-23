@@ -686,10 +686,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        MusicalSettings, ProcessingMode, VocalEffectsConfig,
-        process_vocal_effects_512,
-    };
+    use crate::{MusicalSettings, ProcessingMode, VocalEffectsConfig, process_vocal_effects_512};
 
     fn sine_wave_512(freq_hz: f32, sample_rate: f32) -> [f32; 512] {
         let mut buf = [0.0f32; 512];
@@ -724,10 +721,22 @@ mod tests {
         let mut phases_out_b = [0.0f32; 512];
 
         let out_a = process_vocal_effects_512(
-            &mut input_a, None, &mut phases_in_a, &mut phases_out_a, 1.0, &config, &settings_default,
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_default,
         );
         let out_b = process_vocal_effects_512(
-            &mut input_b, None, &mut phases_in_b, &mut phases_out_b, 1.0, &config, &settings_custom,
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_custom,
         );
 
         let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
@@ -759,10 +768,22 @@ mod tests {
         let mut phases_out_b = [0.0f32; 512];
 
         let out_a = process_vocal_effects_512(
-            &mut input_a, None, &mut phases_in_a, &mut phases_out_a, 1.0, &config, &settings_default,
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_default,
         );
         let out_b = process_vocal_effects_512(
-            &mut input_b, None, &mut phases_in_b, &mut phases_out_b, 1.0, &config, &settings_custom,
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_custom,
         );
 
         let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
@@ -796,10 +817,22 @@ mod tests {
         let mut phases_out_b = [0.0f32; 512];
 
         let out_a = process_vocal_effects_512(
-            &mut input_a, None, &mut phases_in_a, &mut phases_out_a, 1.0, &config, &settings_a,
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_a,
         );
         let out_b = process_vocal_effects_512(
-            &mut input_b, None, &mut phases_in_b, &mut phases_out_b, 1.0, &config, &settings_b,
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_b,
         );
 
         let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);

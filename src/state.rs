@@ -63,15 +63,21 @@ mod tests {
     #[test]
     fn test_formant_male_ratio_default() {
         let settings = MusicalSettings::default();
-        assert!((settings.formant_male_ratio - 0.5).abs() < 1e-6,
-            "default male ratio should be 0.5, got {}", settings.formant_male_ratio);
+        assert!(
+            (settings.formant_male_ratio - 0.5).abs() < 1e-6,
+            "default male ratio should be 0.5, got {}",
+            settings.formant_male_ratio
+        );
     }
 
     #[test]
     fn test_formant_female_ratio_default() {
         let settings = MusicalSettings::default();
-        assert!((settings.formant_female_ratio - 2.0).abs() < 1e-6,
-            "default female ratio should be 2.0, got {}", settings.formant_female_ratio);
+        assert!(
+            (settings.formant_female_ratio - 2.0).abs() < 1e-6,
+            "default female ratio should be 2.0, got {}",
+            settings.formant_female_ratio
+        );
     }
 
     #[test]
