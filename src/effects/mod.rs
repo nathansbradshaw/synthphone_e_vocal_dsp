@@ -77,8 +77,8 @@ where
     );
 
     let formant_ratio = match formant {
-        1 => 0.5,
-        2 => 2.0,
+        1 => settings.formant_male_ratio,
+        2 => settings.formant_female_ratio,
         _ => 1.0,
     };
     let use_formants = formant != 0;
@@ -275,9 +275,9 @@ where
         synthesis_frequencies.fill(0.0);
 
         let formant_ratio = match formant {
-            1 => 0.8, // Lower formants
-            2 => 1.3, // Raise formants
-            _ => 1.0, // No formant shift
+            1 => settings.formant_male_ratio,
+            2 => settings.formant_female_ratio,
+            _ => 1.0,
         };
 
         // Pitch and formant shifting
@@ -682,4 +682,160 @@ where
     }
 
     output_samples_f
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{MusicalSettings, ProcessingMode, VocalEffectsConfig, process_vocal_effects_512};
+
+    fn sine_wave_512(freq_hz: f32, sample_rate: f32) -> [f32; 512] {
+        let mut buf = [0.0f32; 512];
+        for (i, s) in buf.iter_mut().enumerate() {
+            *s = (2.0 * core::f32::consts::PI * freq_hz * i as f32 / sample_rate).sin() * 0.5;
+        }
+        buf
+    }
+
+    #[test]
+    fn test_male_formant_ratio_affects_output() {
+        let config = VocalEffectsConfig::default();
+
+        let settings_default = MusicalSettings {
+            formant: 1,
+            formant_male_ratio: 0.5,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+        let settings_custom = MusicalSettings {
+            formant: 1,
+            formant_male_ratio: 0.25,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+
+        let mut input_a = sine_wave_512(220.0, 48000.0);
+        let mut input_b = sine_wave_512(220.0, 48000.0);
+        let mut phases_in_a = [0.0f32; 512];
+        let mut phases_out_a = [0.0f32; 512];
+        let mut phases_in_b = [0.0f32; 512];
+        let mut phases_out_b = [0.0f32; 512];
+
+        let out_a = process_vocal_effects_512(
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_default,
+        );
+        let out_b = process_vocal_effects_512(
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_custom,
+        );
+
+        let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(differs, "different formant_male_ratio values must produce different output");
+    }
+
+    #[test]
+    fn test_female_formant_ratio_affects_output() {
+        let config = VocalEffectsConfig::default();
+
+        let settings_default = MusicalSettings {
+            formant: 2,
+            formant_female_ratio: 2.0,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+        let settings_custom = MusicalSettings {
+            formant: 2,
+            formant_female_ratio: 3.5,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+
+        let mut input_a = sine_wave_512(220.0, 48000.0);
+        let mut input_b = sine_wave_512(220.0, 48000.0);
+        let mut phases_in_a = [0.0f32; 512];
+        let mut phases_out_a = [0.0f32; 512];
+        let mut phases_in_b = [0.0f32; 512];
+        let mut phases_out_b = [0.0f32; 512];
+
+        let out_a = process_vocal_effects_512(
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_default,
+        );
+        let out_b = process_vocal_effects_512(
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_custom,
+        );
+
+        let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(differs, "different formant_female_ratio values must produce different output");
+    }
+
+    #[test]
+    fn test_no_formant_ratio_has_no_effect() {
+        let config = VocalEffectsConfig::default();
+
+        let settings_a = MusicalSettings {
+            formant: 0,
+            formant_male_ratio: 0.1,
+            formant_female_ratio: 5.0,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+        let settings_b = MusicalSettings {
+            formant: 0,
+            formant_male_ratio: 0.9,
+            formant_female_ratio: 0.5,
+            mode: ProcessingMode::PitchControl,
+            ..MusicalSettings::default()
+        };
+
+        let mut input_a = sine_wave_512(220.0, 48000.0);
+        let mut input_b = sine_wave_512(220.0, 48000.0);
+        let mut phases_in_a = [0.0f32; 512];
+        let mut phases_out_a = [0.0f32; 512];
+        let mut phases_in_b = [0.0f32; 512];
+        let mut phases_out_b = [0.0f32; 512];
+
+        let out_a = process_vocal_effects_512(
+            &mut input_a,
+            None,
+            &mut phases_in_a,
+            &mut phases_out_a,
+            1.0,
+            &config,
+            &settings_a,
+        );
+        let out_b = process_vocal_effects_512(
+            &mut input_b,
+            None,
+            &mut phases_in_b,
+            &mut phases_out_b,
+            1.0,
+            &config,
+            &settings_b,
+        );
+
+        let differs = out_a.iter().zip(out_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(!differs, "formant=0 should ignore ratio fields entirely");
+    }
 }
