@@ -1,16 +1,47 @@
-use libm::{expf, floorf, sqrtf};
+use libm::{expf, floorf, powf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
     dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
 };
 
+/// Sample a captured spectral envelope at a fractional bin position, extrapolating
+/// past its top bin instead of clamping flat. A formant ratio below 1.0 (deeper/"male"
+/// shift) asks for source content above the envelope's captured range — physically
+/// above Nyquist, which was never recorded — for output bins near the top of the
+/// spectrum. Holding the last bin's value flat there reads as an abrupt plateau, so
+/// instead continue the envelope's own trailing roll-off: measure the ratio between
+/// its last two bins (how fast it's already decaying) and keep applying that same
+/// per-bin ratio outward.
+fn sample_envelope_extrapolated<const HALF_N: usize>(envelope: &[f32; HALF_N], pos: f32) -> f32 {
+    let max_idx = HALF_N - 1;
+    let pos = pos.max(0.0);
+    if pos <= max_idx as f32 {
+        let idx = pos as usize;
+        let frac = pos - idx as f32;
+        return if idx < max_idx {
+            envelope[idx] * (1.0 - frac) + envelope[idx + 1] * frac
+        } else {
+            envelope[idx]
+        };
+    }
+
+    let last = envelope[max_idx].max(1e-6_f32);
+    let prev = envelope[max_idx - 1].max(1e-6_f32);
+    let decay_per_bin = (last / prev).clamp(0.05, 1.0);
+    let bins_beyond = pos - max_idx as f32;
+    last * powf(decay_per_bin, bins_beyond)
+}
+
 /// Generic pitch correction processing (pitch correction)
+#[allow(clippy::too_many_arguments)]
 pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
     last_input_phases: &mut [f32; N],
     last_output_phases: &mut [f32; N],
     previous_pitch_shift_ratio: f32,
+    cached_envelope: &mut [f32; HALF_N],
+    cached_inv_envelope: &mut [f32; HALF_N],
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
 ) -> [f32; N]
@@ -26,7 +57,6 @@ where
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
-    let mut envelope = [1.0f32; HALF_N];
     let mut hps_buffer = [1.0f32; HALF_N];
 
     let formant = settings.formant;
@@ -54,9 +84,16 @@ where
     synthesis_magnitudes.fill(0.0);
     synthesis_frequencies.fill(0.0);
 
-    // Extract formant envelope if needed
-    if formant != 0 {
-        extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
+    // Formant preservation runs unconditionally (regardless of `formant`) so pitch
+    // shifting alone never drags the vowel resonance along with it. Recomputed fresh
+    // every hop rather than cached across hops like
+    // `process_harmony_generic_with_formant` — this is the sole voice in the signal
+    // path here, so a stale envelope surviving a fast consonant/vowel transition would
+    // be audible as crunchy amplitude artifacts, whereas harmony's cache only colors a
+    // secondary voice blended with the untouched original.
+    extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, cached_envelope);
+    for i in 0..HALF_N {
+        cached_inv_envelope[i] = 1.0 / cached_envelope[i].max(1e-6_f32);
     }
 
     let fundamental_index = frequency_analysis::find_fundamental_frequency(
@@ -81,33 +118,21 @@ where
         2 => settings.formant_female_ratio,
         _ => 1.0,
     };
-    let use_formants = formant != 0;
 
     for i in 0..HALF_N {
         if analysis_magnitudes[i] <= 1e-8 {
             continue;
         }
-        let residual = if use_formants {
-            analysis_magnitudes[i] / envelope[i].max(1e-6_f32)
-        } else {
-            analysis_magnitudes[i]
-        };
+        // Source-filter decomposition: strip the formant at the source bin, reapply it
+        // (optionally re-warped by `formant_ratio`) at the destination bin so vowel
+        // resonances stay put while the harmonic content moves to the new pitch.
+        let residual = analysis_magnitudes[i] * cached_inv_envelope[i];
         let new_bin_f = i as f32 * pitch_shift_ratio;
         let new_bin = (floorf(new_bin_f + 0.5) * octave_factor) as usize;
 
         if new_bin < HALF_N {
-            let shifted_envelope = if use_formants {
-                let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                let env_idx = env_pos as usize;
-                let frac = env_pos - env_idx as f32;
-                if env_idx < HALF_N - 1 {
-                    envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                } else {
-                    envelope[env_idx]
-                }
-            } else {
-                1.0
-            };
+            let env_pos = new_bin as f32 / formant_ratio;
+            let shifted_envelope = sample_envelope_extrapolated(cached_envelope, env_pos);
 
             synthesis_magnitudes[new_bin] = residual * shifted_envelope;
             synthesis_frequencies[new_bin] =
@@ -212,11 +237,14 @@ where
 }
 
 /// Generic dry processing (pitch shifting with formant preservation but no correction)
+#[allow(clippy::too_many_arguments)]
 pub fn process_dry_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
     synth_buffer: Option<&mut [f32; N]>,
     last_input_phases: &mut [f32; N],
     last_output_phases: &mut [f32; N],
+    cached_envelope: &mut [f32; HALF_N],
+    cached_inv_envelope: &mut [f32; HALF_N],
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
 ) -> [f32; N]
@@ -230,7 +258,6 @@ where
     let mut analysis_frequencies = [0.0; HALF_N];
     let mut synthesis_magnitudes = [0.0; N];
     let mut synthesis_frequencies = [0.0; N];
-    let mut envelope = [1.0f32; HALF_N];
 
     let formant = settings.formant;
     let note = settings.note;
@@ -265,9 +292,16 @@ where
             hop_size,
         );
 
-        // Extract formant envelope if needed
-        if formant != 0 {
-            extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
+        // Formant preservation runs unconditionally so pitch shifting alone never drags
+        // the vowel resonance along with it. Recomputed fresh every hop rather than
+        // cached across hops like `process_harmony_generic_with_formant` — this is the
+        // sole voice in the signal path here, so a stale envelope surviving a fast
+        // consonant/vowel transition would be audible as crunchy amplitude artifacts,
+        // whereas harmony's cache only colors a secondary voice blended with the
+        // untouched original.
+        extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, cached_envelope);
+        for i in 0..HALF_N {
+            cached_inv_envelope[i] = 1.0 / cached_envelope[i].max(1e-6_f32);
         }
 
         // Zero synthesis arrays
@@ -282,28 +316,16 @@ where
 
         // Pitch and formant shifting
         for i in 0..HALF_N {
-            let residual = if formant != 0 {
-                analysis_magnitudes[i] / envelope[i].max(1e-6)
-            } else {
-                analysis_magnitudes[i]
-            };
+            // Source-filter decomposition: strip the formant at the source bin, reapply
+            // it (optionally re-warped by `formant_ratio`) at the destination bin so
+            // vowel resonances stay put while the harmonic content moves to the new pitch.
+            let residual = analysis_magnitudes[i] * cached_inv_envelope[i];
 
             let new_bin = (floorf(i as f32 * pitch_shift_ratio + 0.5) * octave_factor) as usize;
 
             if new_bin < HALF_N {
-                let shifted_envelope = if formant != 0 {
-                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                    let env_idx = env_pos as usize;
-                    let frac = env_pos - env_idx as f32;
-
-                    if env_idx < HALF_N - 1 {
-                        envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                    } else {
-                        envelope[env_idx]
-                    }
-                } else {
-                    1.0
-                };
+                let env_pos = new_bin as f32 / formant_ratio;
+                let shifted_envelope = sample_envelope_extrapolated(cached_envelope, env_pos);
 
                 let final_magnitude = residual * shifted_envelope;
                 synthesis_magnitudes[new_bin] += final_magnitude;
@@ -719,12 +741,18 @@ mod tests {
         let mut phases_out_a = [0.0f32; 512];
         let mut phases_in_b = [0.0f32; 512];
         let mut phases_out_b = [0.0f32; 512];
+        let mut env_a = [0.0f32; 256];
+        let mut inv_env_a = [0.0f32; 256];
+        let mut env_b = [0.0f32; 256];
+        let mut inv_env_b = [0.0f32; 256];
 
         let out_a = process_vocal_effects_512(
             &mut input_a,
             None,
             &mut phases_in_a,
             &mut phases_out_a,
+            &mut env_a,
+            &mut inv_env_a,
             1.0,
             &config,
             &settings_default,
@@ -734,6 +762,8 @@ mod tests {
             None,
             &mut phases_in_b,
             &mut phases_out_b,
+            &mut env_b,
+            &mut inv_env_b,
             1.0,
             &config,
             &settings_custom,
@@ -766,12 +796,18 @@ mod tests {
         let mut phases_out_a = [0.0f32; 512];
         let mut phases_in_b = [0.0f32; 512];
         let mut phases_out_b = [0.0f32; 512];
+        let mut env_a = [0.0f32; 256];
+        let mut inv_env_a = [0.0f32; 256];
+        let mut env_b = [0.0f32; 256];
+        let mut inv_env_b = [0.0f32; 256];
 
         let out_a = process_vocal_effects_512(
             &mut input_a,
             None,
             &mut phases_in_a,
             &mut phases_out_a,
+            &mut env_a,
+            &mut inv_env_a,
             1.0,
             &config,
             &settings_default,
@@ -781,6 +817,8 @@ mod tests {
             None,
             &mut phases_in_b,
             &mut phases_out_b,
+            &mut env_b,
+            &mut inv_env_b,
             1.0,
             &config,
             &settings_custom,
@@ -815,12 +853,18 @@ mod tests {
         let mut phases_out_a = [0.0f32; 512];
         let mut phases_in_b = [0.0f32; 512];
         let mut phases_out_b = [0.0f32; 512];
+        let mut env_a = [0.0f32; 256];
+        let mut inv_env_a = [0.0f32; 256];
+        let mut env_b = [0.0f32; 256];
+        let mut inv_env_b = [0.0f32; 256];
 
         let out_a = process_vocal_effects_512(
             &mut input_a,
             None,
             &mut phases_in_a,
             &mut phases_out_a,
+            &mut env_a,
+            &mut inv_env_a,
             1.0,
             &config,
             &settings_a,
@@ -830,6 +874,8 @@ mod tests {
             None,
             &mut phases_in_b,
             &mut phases_out_b,
+            &mut env_b,
+            &mut inv_env_b,
             1.0,
             &config,
             &settings_b,

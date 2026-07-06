@@ -13,11 +13,14 @@ use crate::{
 };
 
 /// Generic vocal effects processing function that works with different FFT sizes and processing modes
+#[allow(clippy::too_many_arguments)]
 fn process_vocal_effects<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
     carrier_buffer: Option<&mut [f32; N]>,
     last_input_phases: &mut [f32; N],
     last_output_phases: &mut [f32; N],
+    cached_envelope: &mut [f32; HALF_N],
+    cached_inv_envelope: &mut [f32; HALF_N],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
@@ -31,6 +34,8 @@ where
             last_input_phases,
             last_output_phases,
             previous_pitch_shift_ratio,
+            cached_envelope,
+            cached_inv_envelope,
             config,
             settings,
         ),
@@ -47,6 +52,8 @@ where
             carrier_buffer,
             last_input_phases,
             last_output_phases,
+            cached_envelope,
+            cached_inv_envelope,
             config,
             settings,
         ),
@@ -60,12 +67,19 @@ where
     }
 }
 
-/// Specialized vocal effects function for 512-point FFT
+/// Specialized vocal effects function for 512-point FFT.
+/// `cached_envelope` and `cached_inv_envelope` are RTIC locals holding the formant
+/// envelope for whichever mode is active; PitchControl/Dry recompute them fresh
+/// every hop (they're the sole voice, so staleness would be audible), they're just
+/// reused scratch space here to avoid a per-call stack allocation.
+#[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_512(
     unwrapped_buffer: &mut [f32; 512],
     carrier_buffer: Option<&mut [f32; 512]>,
     last_input_phases: &mut [f32; 512],
     last_output_phases: &mut [f32; 512],
+    cached_envelope: &mut [f32; 256],
+    cached_inv_envelope: &mut [f32; 256],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
@@ -75,6 +89,8 @@ pub fn process_vocal_effects_512(
         carrier_buffer,
         last_input_phases,
         last_output_phases,
+        cached_envelope,
+        cached_inv_envelope,
         previous_pitch_shift_ratio,
         config,
         settings,
@@ -82,16 +98,19 @@ pub fn process_vocal_effects_512(
 }
 
 /// Specialized vocal effects function for 1024-point FFT.
-/// In Harmony mode, `cached_harmony_envelope` and `cached_harmony_inv_envelope`
-/// are RTIC locals that persist the spectral envelope across hops.
+/// `cached_envelope` and `cached_inv_envelope` are RTIC locals holding the formant
+/// envelope for whichever mode is active. Harmony caches across hops via
+/// `process_harmony_generic_with_formant`'s own refresh cadence (safe there — it
+/// only colors a secondary voice blended with the untouched original); PitchControl
+/// and Dry recompute fresh every hop since they're the sole voice in the path.
 #[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_1024(
     unwrapped_buffer: &mut [f32; 1024],
     carrier_buffer: Option<&mut [f32; 1024]>,
     last_input_phases: &mut [f32; 1024],
     last_output_phases: &mut [f32; 1024],
-    cached_harmony_envelope: &mut [f32; 512],
-    cached_harmony_inv_envelope: &mut [f32; 512],
+    cached_envelope: &mut [f32; 512],
+    cached_inv_envelope: &mut [f32; 512],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
@@ -101,8 +120,8 @@ pub fn process_vocal_effects_1024(
             unwrapped_buffer,
             last_input_phases,
             last_output_phases,
-            cached_harmony_envelope,
-            cached_harmony_inv_envelope,
+            cached_envelope,
+            cached_inv_envelope,
             config,
             settings,
         )
@@ -112,6 +131,8 @@ pub fn process_vocal_effects_1024(
             carrier_buffer,
             last_input_phases,
             last_output_phases,
+            cached_envelope,
+            cached_inv_envelope,
             previous_pitch_shift_ratio,
             config,
             settings,
@@ -120,11 +141,14 @@ pub fn process_vocal_effects_1024(
 }
 
 /// Specialized vocal effects function for 2048-point FFT
+#[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_2048(
     unwrapped_buffer: &mut [f32; 2048],
     carrier_buffer: Option<&mut [f32; 2048]>,
     last_input_phases: &mut [f32; 2048],
     last_output_phases: &mut [f32; 2048],
+    cached_envelope: &mut [f32; 1024],
+    cached_inv_envelope: &mut [f32; 1024],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
@@ -134,6 +158,8 @@ pub fn process_vocal_effects_2048(
         carrier_buffer,
         last_input_phases,
         last_output_phases,
+        cached_envelope,
+        cached_inv_envelope,
         previous_pitch_shift_ratio,
         config,
         settings,
@@ -141,11 +167,14 @@ pub fn process_vocal_effects_2048(
 }
 
 /// Specialized vocal effects function for 4096-point FFT
+#[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_4096(
     unwrapped_buffer: &mut [f32; 4096],
     carrier_buffer: Option<&mut [f32; 4096]>,
     last_input_phases: &mut [f32; 4096],
     last_output_phases: &mut [f32; 4096],
+    cached_envelope: &mut [f32; 2048],
+    cached_inv_envelope: &mut [f32; 2048],
     previous_pitch_shift_ratio: f32,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
@@ -155,6 +184,8 @@ pub fn process_vocal_effects_4096(
         carrier_buffer,
         last_input_phases,
         last_output_phases,
+        cached_envelope,
+        cached_inv_envelope,
         previous_pitch_shift_ratio,
         config,
         settings,
