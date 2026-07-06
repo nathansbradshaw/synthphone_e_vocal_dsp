@@ -1,7 +1,9 @@
-# V1 API Specification
+# v0.2.0 API Specification
 
-Companion to [v1-recommendations.md](./v1-recommendations.md). This is the concrete
-public surface proposed for 1.0 — signatures are normative. The crate stays
+Companion to [v0.2-recommendations.md](./v0.2-recommendations.md). This is the concrete
+public surface proposed for 0.2.0 — signatures are normative. (0.2.0 is deliberately
+pre-1.0: the API must survive the Synthphone firmware migration and real desktop use
+before we promise stability.) The crate stays
 `synthphone-e-vocal-dsp` (decided 2026-07: the Synthphone is the primary use case;
 platform-agnosticism is a property of the crate, not its name).
 
@@ -39,6 +41,7 @@ synthphone_e_vocal_dsp
 ├── settings                     // MusicalSettings, ProcessingMode, Key, FormantMode
 ├── error                        // Error enum
 ├── blocks                       // composable spectral primitives (extension API)
+├── tap                          // per-hop introspection for GUIs (feature "tap")
 ├── pitch                        // YIN + HPS detection, note quantization
 ├── music                        // keys, scales, note↔frequency tables
 ├── fx                           // bitcrush, sample-rate reduce, normalize
@@ -143,7 +146,7 @@ impl ProcessorConfig {
     pub fn frequency_range(self, min_hz: f32, max_hz: f32) -> Result<Self, Error>;
     pub fn magnitude_threshold(self, t: f32) -> Result<Self, Error>;
 
-    // Promoted from hardcoded values (v1-recommendations.md §8b):
+    // Promoted from hardcoded values (v0.2-recommendations.md §8b):
     pub fn limiter_threshold(self, t: f32) -> Result<Self, Error>;       // was 0.95, ×3 copies
     pub fn harmony_envelope_refresh_hops(self, n: u8) -> Result<Self, Error>; // was 16
     pub fn reference_pitch_hz(self, a4: f32) -> Result<Self, Error>;     // was implicit 440.0
@@ -207,7 +210,7 @@ impl std::error::Error for Error {}
 Drops `BufferSizeMismatch` / `UnsupportedFftSize` / `ProcessingFailed` — buffer sizes
 are const-generic (can't mismatch), FFT size is a type parameter (can't be
 unsupported), and processing is infallible. There is deliberately no `NotReady`-style
-error either: real-time paths never fail, they emit silence (see §12 contracts).
+error either: real-time paths never fail, they emit silence (see §13 contracts).
 
 ## 4. Frame API — `VocalProcessor<const N: usize>`
 
@@ -260,7 +263,7 @@ impl<const N: usize> VocalProcessor<N> {
 
 Changes vs. today's `process_vocal_effects_*`:
 
-| Today | V1 |
+| Today | v0.2 |
 |---|---|
 | 9 args, caller owns 5 pieces of state | 4 args, processor owns state |
 | Returns `[f32; N]` by value (16 KB copy at 4096) | Writes into `&mut` output |
@@ -471,7 +474,138 @@ trait (`FftOps` — microfft is an implementation detail we may swap), Hann tabl
 the envelope extrapolation helper. These are the pieces most likely to change when
 optimizing; `blocks` is the contract, these are the implementation.
 
-## 7. SPSC ring buffer (`spsc`)
+## 7. Diagnostics tap (`tap`, feature-gated)
+
+For hosts that want to *see* the processing: a desktop twin of the Daisy showing
+frequency tracks, spectra, formant envelopes, FFT frames, and YIN internals live.
+Everything the engine computes per hop becomes observable — without the Daisy ever
+paying for it.
+
+### Zero-cost guarantee (design principle 6 applied)
+
+- The entire module is behind the **`tap` feature**. Disabled (the Daisy build):
+  the module, the trait, and the tapped methods **do not exist** — not a runtime
+  branch, not a null check, zero bytes of flash. `process_frame` is bit-identical
+  with and without the feature.
+- Enabled, the normal methods are still untouched: tapping is a *separate* entry
+  point (`process_frame_tapped`), so even a desktop build only pays when it asks.
+- No copies inside the library: the report hands out borrows into live internal
+  buffers for the duration of one callback. The observer copies what it wants
+  (that's the GUI's memory, not the crate's).
+- The only real cost when tapping: a few intermediate buffers that the untapped path
+  overwrites in place must persist to end-of-hop (e.g. the pre-shift analysis frame,
+  YIN's CMNDF curve ~75 f32). They live inside the tapped call's stack frame, sized
+  const, `no_std`-clean — the tap works on embedded too if you want RTT streaming
+  to a host plotter.
+
+### The report
+
+One callback per hop, carrying a borrowed view of every pipeline stage:
+
+```rust
+#[cfg(feature = "tap")]
+pub mod tap {
+    /// Everything the engine knows about one hop. All fields are borrows into
+    /// processor-internal state, valid only during the callback.
+    #[non_exhaustive]
+    pub struct HopReport<'a, const N: usize, const HALF_N: usize> {
+        // Time domain
+        pub input: &'a [f32; N],              // pre-window input frame
+        pub output: &'a [f32; N],             // post-synthesis, pre-overlap-add
+
+        // Analysis (pre-effect)
+        pub analysis: &'a SpectralFrame<HALF_N>,   // magnitudes + inst. frequencies
+        pub envelope: &'a [f32; HALF_N],           // formant envelope (as configured)
+
+        // Synthesis (post-effect)
+        pub synthesis: &'a SpectralFrame<HALF_N>,  // what went into the IFFT
+
+        // Pitch detection
+        pub detected_pitch_hz: Option<f32>,        // post octave-snap
+        pub raw_pitch_hz: Option<f32>,             // pre octave-snap (show the fold!)
+        pub target_pitch_hz: Option<f32>,          // where correction is pulling
+        pub pitch_shift_ratio: f32,                // smoothed ratio actually applied
+        pub yin: Option<YinTrace<'a>>,             // Harmony modes; None elsewhere
+        pub hps: Option<HpsTrace<'a>>,             // PitchCorrect; None elsewhere
+
+        // Bookkeeping
+        pub mode: ProcessingMode,
+        pub hop_index: u64,                        // monotonic since reset
+        pub ctx: FrameContext,                     // bin_width, hop, sample_rate
+    }
+
+    /// YIN internals — enough to plot the full CMNDF curve with threshold line,
+    /// chosen lag, and the parabolic refinement.
+    pub struct YinTrace<'a> {
+        pub cmndf: &'a [f32],                 // d′[τ] for τ in min_lag..=max_lag
+        pub min_lag: usize,
+        pub chosen_lag: Option<f32>,          // fractional, post-interpolation
+        pub threshold: f32,
+        pub effective_sample_rate: f32,       // post-decimation
+    }
+
+    /// HPS internals — the product spectrum, the winning bin, and whether the
+    /// sub-octave correction fired.
+    pub struct HpsTrace<'a> {
+        pub product_spectrum: &'a [f32],
+        pub peak_bin: usize,
+        pub chosen_bin: usize,                // != peak_bin when sub-octave fold hit
+        pub noise_threshold: f32,
+    }
+
+    pub trait Tap<const N: usize, const HALF_N: usize> {
+        fn on_hop(&mut self, report: &HopReport<'_, N, HALF_N>);
+    }
+    // Blanket impl for closures: FnMut(&HopReport<N, HALF_N>)
+}
+
+#[cfg(feature = "tap")]
+impl<const N: usize> VocalProcessor<N> {
+    /// Identical processing to `process_frame`, plus one `on_hop` callback.
+    pub fn process_frame_tapped(
+        &mut self,
+        input: &[f32; N],
+        carrier: Option<&[f32; N]>,
+        settings: &MusicalSettings,
+        output: &mut [f32; N],
+        tap: &mut impl tap::Tap<N, HALF_N>,
+    );
+}
+
+#[cfg(feature = "tap")]
+impl<const N: usize, const BUF: usize> StreamingProcessor<N, BUF> {
+    /// Streaming variants — the device-twin GUI shape: feed the same blocks the
+    /// Daisy would see, get audio out AND a report per completed hop.
+    pub fn process_block_tapped(
+        &mut self, input: &[f32], output: &mut [f32],
+        settings: &MusicalSettings, tap: &mut impl tap::Tap<N, HALF_N>,
+    );
+}
+```
+
+`HopReport` is `#[non_exhaustive]` **by design**: "show even more of what's going on"
+is an explicitly anticipated request, and adding a field to the report is a
+non-breaking change. The promotion path for new introspection: add it to `HopReport`
+first; it only becomes a knob in `ProcessorConfig` if someone needs to *change* it,
+not just see it.
+
+### What the GUI plots from one report
+
+| Panel | Source |
+|---|---|
+| Input/output waveforms | `input`, `output` |
+| Live spectrum (pre/post) | `analysis.magnitudes`, `synthesis.magnitudes` |
+| Formant envelope overlay | `envelope` over `analysis.magnitudes` |
+| Pitch track + correction pull | `detected_pitch_hz`, `target_pitch_hz`, `pitch_shift_ratio` over `hop_index` |
+| YIN CMNDF curve + threshold + chosen lag | `yin` |
+| HPS spectrum + sub-octave decision | `hps` |
+| Octave-snap events | `raw_pitch_hz` vs `detected_pitch_hz` disagreement |
+
+Ship `examples/scope.rs` (feature `tap` + `std`): CPAL mic in → `process_block_tapped`
+→ terminal or egui plots. It doubles as the reference consumer that keeps the report
+honest.
+
+## 8. SPSC ring buffer (`spsc`)
 
 Compile-time enforced single-producer/single-consumer; audio-loss semantics kept but
 made explicit.
@@ -509,7 +643,7 @@ removed: under enforced SPSC, relaxed-load/release-store index handoff is suffic
 every supported target. Result: **identical behavior on all platforms** and the
 `cortex-m` and `critical-section` dependencies are dropped entirely.
 
-## 8. Utilities
+## 9. Utilities
 
 ### `pitch`
 
@@ -577,7 +711,7 @@ Today's `process_*_generic` free functions, `#[doc(hidden)]`, explicitly semver-
 Escape hatch for callers who need to own state placement at a finer grain than
 `VocalProcessor` allows.
 
-## 9. Feature flags
+## 10. Feature flags
 
 | Feature | Default | Adds |
 |---|---|---|
@@ -586,12 +720,13 @@ Escape hatch for callers who need to own state placement at a finer grain than
 | `log` | off | `log` crate tracing at hop boundaries (was `debug-logging`, unwired) |
 | `serde` | off | `Serialize`/`Deserialize` on `ProcessorConfig`, `MusicalSettings`, `Key`, etc. — preset save/load in desktop hosts |
 | `defmt` | off | `defmt::Format` on public types — idiomatic embedded logging (RTT) without `core::fmt` bloat |
+| `tap` | off | Diagnostics tap (§7): per-hop `HopReport` with every pipeline stage borrowed out for metering/plotting GUIs. Compiled out entirely when off — the Daisy build pays zero |
 
-Removed: `embedded` (empty default), `cortex-m` (no longer needed, §7),
+Removed: `embedded` (empty default), `cortex-m` (no longer needed, §8),
 `cepstral-smoothing` / `formant-shifting` (unwired today; cepstral envelope extraction
 becomes always-on internals — it's required for correct formant handling, not optional).
 
-## 10. Canonical examples (ship in `examples/`, compile in CI)
+## 11. Canonical examples (ship in `examples/`, compile in CI)
 
 **Desktop, streaming** (`examples/wav_autotune.rs`):
 
@@ -621,9 +756,9 @@ processor.process_frame(&frame, None, &settings, &mut synth);
 out_producer.add_overlapped(&synth);
 ```
 
-## 11. Migration map (0.1.x → 1.0)
+## 12. Migration map (0.1.x → 0.2.0)
 
-| 0.1.x | 1.0 |
+| 0.1.x | 0.2.0 |
 |---|---|
 | `process_vocal_effects_1024(9 args)` | `VocalProcessor::<1024>::process_frame(4 args)` |
 | `VocalEffectsConfig { pub fields }` | `ProcessorConfig::new(sr).hop_ratio(..)?` |
@@ -635,10 +770,11 @@ out_producer.add_overlapped(&synth);
 | `find_pitch_yin(..) -> f32` (0.0 = unvoiced) | `pitch::detect_yin(..) -> Option<f32>` |
 | features `embedded`, `cortex-m`, `debug-logging` | *(removed)*, *(removed)*, `log` |
 
-## 12. Cross-cutting API contracts
+## 13. Cross-cutting API contracts
 
 Guarantees that aren't visible in any single signature but that integrators depend on.
-Each is a documented, CI-enforced promise from 1.0.
+Each is a documented, CI-enforced promise from 0.2.0 — these hold even while the API
+shape is still allowed to move.
 
 ### Real-time safety
 - **No panics in processing paths.** `process_frame`, `write`/`read`/`process_block`,
@@ -678,7 +814,7 @@ Each is a documented, CI-enforced promise from 1.0.
   guidelines C-COMMON-TRAITS); processors derive `Debug` (redacted large arrays) and
   `Clone` (cheap way to preallocate a reset template).
 
-## 13. Use-case coverage matrix
+## 14. Use-case coverage matrix
 
 The spec is checked against these personas; every row must have a complete API path.
 When a future change forces a trade-off between rows, **row 1 wins** (design
@@ -686,12 +822,13 @@ principle 6).
 
 | # | Persona | API path | Knobs they touch |
 |---|---|---|---|
-| 1 | **Synthphone (Daisy Seed)** — the reason this crate exists | `spsc` + `VocalProcessor` split-context (§5/§10); `Smoothed` envelope where the budget demands | Modes, key, formant, targets from MIDI; `envelope_method`, `harmony_envelope_refresh_hops` to fit the 5.3 ms hop budget |
+| 1 | **Synthphone (Daisy Seed)** — the reason this crate exists | `spsc` + `VocalProcessor` split-context (§5/§11); `Smoothed` envelope where the budget demands | Modes, key, formant, targets from MIDI; `envelope_method`, `harmony_envelope_refresh_hops` to fit the 5.3 ms hop budget |
 | 2 | **Voice changer** (desktop/RPi toy, cosplay, streaming) | `StreamingProcessor::process_block[_in_place]`, mode `PitchShift` | `pitch_shift_semitones` (continuous ± cents), `FormantMode::Shift` independent of pitch, `mix`; robot/whisper via `blocks` (§6.4) |
 | 3 | **Autotune / music maker** (plugin, DAW tool) | `StreamingProcessor` in a plugin `process()`; `serde` presets | `correction_strength` (hard-tune ↔ subtle), `transition_speed`, `Key::Custom(ScaleMask)` for pentatonic/modal scales, `forced_note` for melody control, `mix` |
 | 4 | **Harmonizer / vocoder instrument** | `write_with_carrier` with own synth as carrier; custom voicing via `blocks::add_shifted` per-voice gains | `target_frequencies` (any voice count), `envelope_method`, per-voice gain in `blocks` |
 | 5 | **Tuner / analyzer / visualizer** | `analyze_frame` (no synthesis, ~half cost) + `pitch::*`, `SpectralFrame` bins for display | `PitchDetectorConfig` (range, thresholds), `reference_pitch_hz` (A≠440 tunings) |
 | 6 | **Sound designer / circuit-bender** | Any of the above + `blocks`; extreme values are legal by design principle 7 | *Everything*: `magnitude_threshold` as a spectral gate, `limiter_threshold` > 1.0, 8× formant warps, `hop_ratio` extremes, YIN thresholds on non-vocal material |
+| 7 | **Device-twin GUI / metrics dashboard** — a desktop app that behaves like the Daisy but visualizes the internals (waveforms, spectra, formant envelope, pitch tracks, YIN/HPS traces) | `StreamingProcessor::process_block_tapped` with feature `tap` (§7); same blocks the Daisy sees, plus one `HopReport` per hop | Read-only access to every stage; `HopReport` is `#[non_exhaustive]` so "show more" is always a non-breaking addition |
 
 Gaps this matrix closed (all now in §1/§2): continuous `pitch_shift_semitones` (row 2 —
 octave-only transpose was Synthphone keypad leakage), `mix` (rows 2–4 — wet/dry was
@@ -700,9 +837,15 @@ tool), `EnvelopeMethod` (rows 1 vs 4 — the Daisy/desktop CPU trade-off was pre
 an internal hardcode), full `PitchDetectorConfig` exposure (rows 5–6), and the
 reject-crashes-not-weird-sounds validation policy (row 6).
 
-## 14. Stability policy
+## 15. Stability policy
 
-- Everything under the root and named modules above: semver-stable from 1.0.
-- `raw`: exempt, `#[doc(hidden)]`.
-- All public structs/enums that may grow: `#[non_exhaustive]`.
-- CI runs `cargo semver-checks` from 1.0.0 onward.
+- 0.2.0 is a **pre-1.0 release by intent**: standard 0.x semver applies (breaking
+  changes bump the minor version, 0.2.x patches never break). We aim to hold the shape
+  in this spec through 0.2.x, but reserve the right to learn from the firmware
+  migration and desktop dogfooding.
+- 1.0 is cut when the Synthphone has shipped on this API and it has stopped moving —
+  a milestone, not a date.
+- `raw`: exempt at every version, `#[doc(hidden)]`.
+- All public structs/enums that may grow: `#[non_exhaustive]` from 0.2.0.
+- CI runs `cargo semver-checks` from 0.2.0 (it understands 0.x rules); the §13
+  real-time contracts are enforced from 0.2.0 regardless.
