@@ -48,7 +48,7 @@ where
         hop_size,
     );
 
-    let octave_factor = settings.octave as f32 * 0.5;
+    let octave_factor = settings.octave_ratio;
 
     // Apply spectral shift
     synthesis_magnitudes.fill(0.0);
@@ -243,7 +243,7 @@ where
     // Forward FFT
     let fft_result = F::forward_fft(unwrapped_buffer);
 
-    let octave_factor = settings.octave as f32 * 0.5;
+    let octave_factor = settings.octave_ratio;
     let pitch_shift_ratio = octave_factor;
 
     // If no effects, just pass through

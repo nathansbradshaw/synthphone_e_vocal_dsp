@@ -20,8 +20,9 @@ pub struct MusicalSettings {
     pub note: i8,
     /// Midi notes provided
     pub midi_frequencies: [f32; 8],
-    /// Octave setting
-    pub octave: i8,
+    /// Pitch ratio applied on top of the sung/target note
+    /// (0.5 = octave down, 1.0 = unchanged, 2.0 = octave up)
+    pub octave_ratio: f32,
     /// Formant shift mode (0 = none, 1 = male, 2 = female)
     pub formant: i8,
     /// Spectral envelope warp ratio for male mode — lower shifts formants down
@@ -38,7 +39,7 @@ impl Default for MusicalSettings {
             key: 0,
             note: 0,
             midi_frequencies: [0.0; 8],
-            octave: 2,
+            octave_ratio: 1.0,
             formant: 0,
             formant_male_ratio: 0.5,
             formant_female_ratio: 2.0,
@@ -56,7 +57,7 @@ mod tests {
         let settings = MusicalSettings::default();
         assert_eq!(settings.key, 0);
         assert_eq!(settings.note, 0);
-        assert_eq!(settings.octave, 2);
+        assert!((settings.octave_ratio - 1.0).abs() < 1e-6);
         assert_eq!(settings.formant, 0);
     }
 
