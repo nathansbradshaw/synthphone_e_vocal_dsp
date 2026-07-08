@@ -38,6 +38,8 @@ impl Default for MusicalSettings {
         Self {
             key: 0,
             note: 0,
+            key: 0,
+            note: 0,
             midi_frequencies: [0.0; 8],
             octave_ratio: 1.0,
             formant: 0,
