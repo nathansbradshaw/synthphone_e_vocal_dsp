@@ -81,7 +81,12 @@ pub fn calculate_pitch_shift(
                 scale_frequencies,
             )
         } else {
-            crate::audio::keys::get_frequency(settings.key, settings.note, settings.octave, false)
+            crate::audio::keys::get_frequency(
+                settings.key,
+                settings.note,
+                settings.octave_ratio,
+                false,
+            )
         };
         let raw_ratio = target_frequency / fundamental_frequency;
         const SMOOTHING_FACTOR: f32 = 0.99;
