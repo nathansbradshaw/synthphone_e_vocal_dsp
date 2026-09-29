@@ -21,13 +21,19 @@ const fn generate_major_scale_frequencies(root_index: usize) -> [f32; SCALE_NOTE
     while octave < MAX_OCTAVES {
         let mut current_index = root_index;
         let mut step_index = 0;
+        let mut octave_multiplier = pow_f32(2.0, octave as i32);
 
         while step_index < MAJOR_SCALE_STEPS.len() && freq_index < SCALE_NOTES * MAX_OCTAVES {
-            let octave_multiplier = pow_f32(2.0, octave as i32);
             frequencies[freq_index] = BASE_FREQUENCIES[current_index] * octave_multiplier;
             freq_index += 1;
 
-            current_index = (current_index + MAJOR_SCALE_STEPS[step_index]) % 12;
+            // Stepping past B wraps back to C, which must land an octave up
+            // so every row keeps ascending from its root.
+            let next_index = current_index + MAJOR_SCALE_STEPS[step_index];
+            if next_index >= 12 {
+                octave_multiplier *= 2.0;
+            }
+            current_index = next_index % 12;
             step_index += 1;
         }
         octave += 1;
@@ -45,13 +51,19 @@ const fn generate_minor_scale_frequencies(root_index: usize) -> [f32; SCALE_NOTE
     while octave < MAX_OCTAVES {
         let mut current_index = root_index;
         let mut step_index = 0;
+        let mut octave_multiplier = pow_f32(2.0, octave as i32);
 
         while step_index < MINOR_SCALE_STEPS.len() && freq_index < SCALE_NOTES * MAX_OCTAVES {
-            let octave_multiplier = pow_f32(2.0, octave as i32);
             frequencies[freq_index] = BASE_FREQUENCIES[current_index] * octave_multiplier;
             freq_index += 1;
 
-            current_index = (current_index + MINOR_SCALE_STEPS[step_index]) % 12;
+            // Stepping past B wraps back to C, which must land an octave up
+            // so every row keeps ascending from its root.
+            let next_index = current_index + MINOR_SCALE_STEPS[step_index];
+            if next_index >= 12 {
+                octave_multiplier *= 2.0;
+            }
+            current_index = next_index % 12;
             step_index += 1;
         }
         octave += 1;
@@ -186,16 +198,17 @@ mod tests {
 
         for octave in 0..MAX_OCTAVES {
             let mut current_index = root_index;
-            let mut current_frequency =
-                BASE_FREQUENCIES[current_index] * (2.0f32).powi(octave as i32);
+            let mut octave_multiplier = (2.0f32).powi(octave as i32);
 
             for &step in MAJOR_SCALE_STEPS.iter() {
                 if freq_index < SCALE_NOTES * MAX_OCTAVES {
-                    frequencies[freq_index] = current_frequency;
+                    frequencies[freq_index] = BASE_FREQUENCIES[current_index] * octave_multiplier;
                     freq_index += 1;
                 }
+                if current_index + step >= 12 {
+                    octave_multiplier *= 2.0;
+                }
                 current_index = (current_index + step) % 12;
-                current_frequency = BASE_FREQUENCIES[current_index] * (2.0f32).powi(octave as i32);
             }
         }
 
@@ -211,6 +224,29 @@ mod tests {
         for i in 0..10 {
             assert!((C_MAJOR_SCALE_FREQUENCIES[i] - runtime_c_major[i]).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn test_all_scales_strictly_ascending() {
+        for (key, scale) in FREQUENCIES.iter().enumerate() {
+            for i in 1..scale.len() {
+                assert!(
+                    scale[i] > scale[i - 1],
+                    "key {key}: index {i} ({}) is not above index {} ({})",
+                    scale[i],
+                    i - 1,
+                    scale[i - 1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_major_third_above_root() {
+        let a = A_MAJOR_SCALE_FREQUENCIES[14];
+        let cs = A_MAJOR_SCALE_FREQUENCIES[16];
+        let ratio = cs / a;
+        assert!((ratio - 1.259_921).abs() < 1e-2, "A→C# ratio was {ratio}");
     }
 
     #[test]
