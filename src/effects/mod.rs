@@ -83,6 +83,8 @@ where
     };
     let use_formants = formant != 0;
 
+    let total_ratio = pitch_shift_ratio * octave_factor;
+
     for i in 0..HALF_N {
         if analysis_magnitudes[i] <= 1e-8 {
             continue;
@@ -92,8 +94,7 @@ where
         } else {
             analysis_magnitudes[i]
         };
-        let new_bin_f = i as f32 * pitch_shift_ratio;
-        let new_bin = (floorf(new_bin_f + 0.5) * octave_factor) as usize;
+        let new_bin = floorf(i as f32 * total_ratio + 0.5) as usize;
 
         if new_bin < HALF_N {
             let shifted_envelope = if use_formants {
@@ -110,8 +111,7 @@ where
             };
 
             synthesis_magnitudes[new_bin] = residual * shifted_envelope;
-            synthesis_frequencies[new_bin] =
-                analysis_frequencies[i] * pitch_shift_ratio * octave_factor;
+            synthesis_frequencies[new_bin] = analysis_frequencies[i] * total_ratio;
         }
     }
 
@@ -243,8 +243,8 @@ where
     // Forward FFT
     let fft_result = F::forward_fft(unwrapped_buffer);
 
-    let octave_factor = settings.octave_ratio;
-    let pitch_shift_ratio = octave_factor;
+    // Dry mode has no pitch correction, so the octave ratio is the whole shift.
+    let pitch_shift_ratio = settings.octave_ratio;
 
     // If no effects, just pass through
     if formant == 0 && (pitch_shift_ratio > 0.99 && pitch_shift_ratio < 1.01) {
@@ -288,7 +288,7 @@ where
                 analysis_magnitudes[i]
             };
 
-            let new_bin = (floorf(i as f32 * pitch_shift_ratio + 0.5) * octave_factor) as usize;
+            let new_bin = floorf(i as f32 * pitch_shift_ratio + 0.5) as usize;
 
             if new_bin < HALF_N {
                 let shifted_envelope = if formant != 0 {
@@ -307,8 +307,7 @@ where
 
                 let final_magnitude = residual * shifted_envelope;
                 synthesis_magnitudes[new_bin] += final_magnitude;
-                synthesis_frequencies[new_bin] =
-                    analysis_frequencies[i] * pitch_shift_ratio * octave_factor;
+                synthesis_frequencies[new_bin] = analysis_frequencies[i] * pitch_shift_ratio;
             }
         }
 
