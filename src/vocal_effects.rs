@@ -8,9 +8,49 @@ use crate::{
     dsp::{Fft512, Fft1024, Fft2048, Fft4096, FftOps},
     effects::{
         process_dry_generic, process_harmony_generic, process_harmony_generic_with_formant,
-        process_pitch_correction_generic, process_vocode_generic,
+        process_pitch_correction_generic, process_pitch_correction_generic_with_state,
+        process_vocode_generic,
     },
 };
+
+/// Streaming 1024-point entry point. Retains the correction ratio between hops;
+/// leaving PitchControl releases it. Legacy by-value APIs remain unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn process_vocal_effects_1024_with_state(
+    input: &mut [f32; 1024],
+    carrier: Option<&mut [f32; 1024]>,
+    input_phases: &mut [f32; 1024],
+    output_phases: &mut [f32; 1024],
+    envelope: &mut [f32; 512],
+    inv_envelope: &mut [f32; 512],
+    ratio: &mut f32,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; 1024] {
+    if settings.mode == ProcessingMode::PitchControl {
+        process_pitch_correction_generic_with_state::<1024, 512, Fft1024>(
+            input,
+            input_phases,
+            output_phases,
+            ratio,
+            config,
+            settings,
+        )
+    } else {
+        *ratio = 1.0;
+        process_vocal_effects_1024(
+            input,
+            carrier,
+            input_phases,
+            output_phases,
+            envelope,
+            inv_envelope,
+            *ratio,
+            config,
+            settings,
+        )
+    }
+}
 
 /// Generic vocal effects processing function that works with different FFT sizes and processing modes
 fn process_vocal_effects<const N: usize, const HALF_N: usize, F>(

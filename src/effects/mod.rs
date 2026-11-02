@@ -2,7 +2,10 @@ use libm::{expf, floorf, sqrtf};
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
+    dsp::{
+        FftOps, calculate_pitch_shift, calculate_pitch_shift_with_state, extract_cepstral_envelope,
+        frequency_analysis,
+    },
 };
 
 /// Generic pitch correction processing (pitch correction)
@@ -11,6 +14,53 @@ pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
     last_input_phases: &mut [f32; N],
     last_output_phases: &mut [f32; N],
     previous_pitch_shift_ratio: f32,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N]
+where
+    F: FftOps<N, HALF_N>,
+{
+    pitch_correction::<N, HALF_N, F>(
+        unwrapped_buffer,
+        last_input_phases,
+        last_output_phases,
+        previous_pitch_shift_ratio,
+        None,
+        config,
+        settings,
+    )
+}
+
+/// Like the legacy entry point, but retains correction and uses configured speed/strength.
+pub fn process_pitch_correction_generic_with_state<const N: usize, const HALF_N: usize, F>(
+    unwrapped_buffer: &mut [f32; N],
+    last_input_phases: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    ratio: &mut f32,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N]
+where
+    F: FftOps<N, HALF_N>,
+{
+    pitch_correction::<N, HALF_N, F>(
+        unwrapped_buffer,
+        last_input_phases,
+        last_output_phases,
+        *ratio,
+        Some(ratio),
+        config,
+        settings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pitch_correction<const N: usize, const HALF_N: usize, F>(
+    unwrapped_buffer: &mut [f32; N],
+    last_input_phases: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    previous_pitch_shift_ratio: f32,
+    correction_state: Option<&mut f32>,
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
 ) -> [f32; N]
@@ -67,14 +117,24 @@ where
     let fundamental_frequency = analysis_frequencies[fundamental_index] * bin_width;
 
     // Calculate pitch shift
-    let pitch_shift_ratio = calculate_pitch_shift(
-        &analysis_magnitudes,
-        &analysis_frequencies,
-        previous_pitch_shift_ratio,
-        settings,
-        bin_width,
-        fundamental_frequency,
-    );
+    let pitch_shift_ratio = if let Some(ratio) = correction_state {
+        let voiced = analysis_magnitudes.iter().any(|&m| m > config.magnitude_threshold);
+        calculate_pitch_shift_with_state(
+            ratio,
+            settings,
+            config,
+            if voiced { fundamental_frequency } else { 0.0 },
+        )
+    } else {
+        calculate_pitch_shift(
+            &analysis_magnitudes,
+            &analysis_frequencies,
+            previous_pitch_shift_ratio,
+            settings,
+            bin_width,
+            fundamental_frequency,
+        )
+    };
 
     let formant_ratio = match formant {
         1 => settings.formant_male_ratio,

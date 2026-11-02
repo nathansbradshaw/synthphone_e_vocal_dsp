@@ -10,9 +10,10 @@ pub struct VocalEffectsConfig {
     pub sample_rate: f32,
     /// Hop ratio as fraction of FFT size (0.0625 to 0.5)
     pub hop_ratio: f32,
-    /// Speed of pitch correction transition (0.0 to 1.0)
+    /// Stateful API: fraction of correction-ratio error applied per hop (0..1).
+    /// 0 holds the previous ratio; 1 snaps to the target in one hop.
     pub transition_speed: f32,
-    /// Strength of pitch correction (0.0 to 1.0, closer to 1.0 = stronger)
+    /// Stateful API: amount of correction (0 = unity, 1 = full target ratio).
     pub pitch_correction_strength: f32,
     /// Minimum frequency to process (Hz)
     pub min_frequency: f32,
