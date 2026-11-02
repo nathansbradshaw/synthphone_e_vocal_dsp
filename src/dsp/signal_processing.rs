@@ -81,12 +81,9 @@ pub fn calculate_pitch_shift(
                 scale_frequencies,
             )
         } else {
-            crate::audio::keys::get_frequency(
-                settings.key,
-                settings.note,
-                settings.octave_ratio,
-                false,
-            )
+            // Unshifted target: `octave_ratio` is applied once by the caller,
+            // uniformly for every target source (MIDI, snapped, fixed note).
+            crate::audio::keys::get_frequency(settings.key, settings.note, 1.0, false)
         };
         let raw_ratio = target_frequency / fundamental_frequency;
         const SMOOTHING_FACTOR: f32 = 0.99;
