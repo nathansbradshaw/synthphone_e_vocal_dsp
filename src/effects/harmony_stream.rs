@@ -224,6 +224,15 @@ pub fn process(
         }
     }
     let (slots, initialize, count) = state.assign(&settings.midi_frequencies);
+    let mut voice_gains = [0.0_f32; 8];
+    for &slot in &slots[..count] {
+        for i in 0..8 {
+            let gain = settings.midi_gains[i];
+            if settings.midi_frequencies[i] == state.targets[slot] && gain.is_finite() {
+                voice_gains[slot] = voice_gains[slot].max(gain.clamp(0.0, 8.0));
+            }
+        }
+    }
     let voiced = fundamental.is_finite() && fundamental > 0.001;
     let voice_count = if voiced { count } else { 0 };
     let lead = if config.harmony_lead_gain.is_finite() {
@@ -235,7 +244,15 @@ pub fn process(
     let dry_gain = if !voiced && count > 0 {
         // Noise/consonants are shared once. Match the RMS scale of the averaged
         // independent voiced parts instead of jumping to unity at every dropout.
-        1.0 / libm::sqrtf(count as f32)
+        if slots[..count].iter().all(|&slot| voice_gains[slot] == 1.0) {
+            1.0 / libm::sqrtf(count as f32)
+        } else {
+            let power = slots[..count]
+                .iter()
+                .map(|&slot| voice_gains[slot] * voice_gains[slot])
+                .sum::<f32>();
+            libm::sqrtf(lead * lead + power) / (lead + count as f32)
+        }
     } else {
         lead * normalization
     };
@@ -254,6 +271,10 @@ pub fn process(
             }
             state.phases[slot] =
                 wrap_phase(state.phases[slot] + TAU * difference * hop as f32 / config.sample_rate);
+            if voice_gains[slot] == 0.0 {
+                state.initialized[slot] = true;
+                continue;
+            }
             let mut previous_harmonic = 0;
             let (mut shift, mut fraction) = (0_i32, 0.0);
             let (mut low_rotation, mut high_rotation) = ((0.0, 0.0), (0.0, 0.0));
@@ -285,7 +306,11 @@ pub fn process(
                     if bin >= 512 || weight <= 0.0 {
                         continue;
                     }
-                    let gain = inv_envelope[i] * envelope[bin] * weight * normalization;
+                    let gain = inv_envelope[i]
+                        * envelope[bin]
+                        * weight
+                        * normalization
+                        * voice_gains[slot];
                     let re = (fft[i].re * cos - fft[i].im * sin) * gain;
                     let im = (fft[i].re * sin + fft[i].im * cos) * gain;
                     spectrum[bin].re += re;
