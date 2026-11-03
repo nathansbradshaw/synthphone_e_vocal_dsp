@@ -4,9 +4,59 @@ use crate::{
     dsp::{Fft1024, FftOps, frequency_analysis, wrap_phase},
 };
 use core::f32::consts::TAU;
-use libm::{cosf, floorf, roundf, sinf};
+use libm::{floorf, roundf};
 
 pub const HARMONY_VOICES: usize = 8;
+
+// A quarter-wave table gives 1024 samples per turn using 1028 bytes of flash.
+// Linear interpolation has <5e-6 absolute error; unlike libm calls its cost is
+// bounded and small enough for independent voices at every FFT hop on M7.
+const fn quarter_wave() -> [f32; 257] {
+    let mut table = [0.0; 257];
+    let mut i = 0;
+    while i <= 256 {
+        let x = i as f64 * core::f64::consts::FRAC_PI_2 / 256.0;
+        let x2 = x * x;
+        table[i] = (x
+            * (1.0
+                + x2 * (-1.0 / 6.0
+                    + x2 * (1.0 / 120.0
+                        + x2 * (-1.0 / 5040.0
+                            + x2 * (1.0 / 362880.0
+                                + x2 * (-1.0 / 39916800.0 + x2 / 6227020800.0)))))))
+            as f32;
+        i += 1;
+    }
+    table
+}
+static QUARTER: [f32; 257] = quarter_wave();
+
+#[inline(always)]
+fn table_sin(index: usize) -> f32 {
+    let index = index & 1023;
+    let offset = index & 255;
+    match index >> 8 {
+        0 => QUARTER[offset],
+        1 => QUARTER[256 - offset],
+        2 => -QUARTER[offset],
+        _ => -QUARTER[256 - offset],
+    }
+}
+
+/// Input is the sum of two phases in [-pi,pi], hence in [-tau,tau].
+#[inline(always)]
+fn sin_cos(phase: f32) -> (f32, f32) {
+    let positive = if phase < 0.0 { phase + TAU } else { phase };
+    let position = positive * (1024.0 / TAU);
+    let index = position as usize;
+    let fraction = position - index as f32;
+    let s = table_sin(index);
+    let c = table_sin(index + 256);
+    (
+        s + fraction * (table_sin(index + 1) - s),
+        c + fraction * (table_sin(index + 257) - c),
+    )
+}
 
 pub struct HarmonyState {
     phases: [[f32; 512]; HARMONY_VOICES],
@@ -204,8 +254,9 @@ pub fn process(
                 state.phases[slot][bin] = offset;
                 let phase = input_phases[source] + offset;
                 let amplitude = shifted[bin] * normalization;
-                spectrum[bin].re += amplitude * cosf(phase);
-                spectrum[bin].im += amplitude * sinf(phase);
+                let (sin, cos) = sin_cos(phase);
+                spectrum[bin].re += amplitude * cos;
+                spectrum[bin].im += amplitude * sin;
             }
             state.initialized[slot] = true;
         }
@@ -222,4 +273,18 @@ pub fn process(
         output[i] = time[i].re * window[i];
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn interpolated_phases_stay_below_five_millionths_error() {
+        for i in -16384..=16384 {
+            let phase = i as f32 * TAU / 16384.0;
+            let (s, c) = sin_cos(phase);
+            assert!((s - libm::sinf(phase)).abs() < 5e-6, "sin({phase})");
+            assert!((c - libm::cosf(phase)).abs() < 5e-6, "cos({phase})");
+        }
+    }
 }
