@@ -13,6 +13,69 @@ use crate::{
     },
 };
 
+/// Allocation-free streaming state. Each MIDI harmony keeps its own phase bank.
+pub struct VocalStreamState {
+    correction_ratio: f32,
+    harmony: crate::effects::harmony_stream::HarmonyState,
+}
+
+impl Default for VocalStreamState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl VocalStreamState {
+    pub const fn new() -> Self {
+        Self {
+            correction_ratio: 1.0,
+            harmony: crate::effects::harmony_stream::HarmonyState::new(),
+        }
+    }
+    pub fn reset(&mut self) {
+        self.correction_ratio = 1.0;
+        self.harmony.reset();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn process_vocal_effects_1024_stream(
+    input: &mut [f32; 1024],
+    carrier: Option<&mut [f32; 1024]>,
+    input_phases: &mut [f32; 1024],
+    output_phases: &mut [f32; 1024],
+    envelope: &mut [f32; 512],
+    inv_envelope: &mut [f32; 512],
+    state: &mut VocalStreamState,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; 1024] {
+    if settings.mode == ProcessingMode::Harmony {
+        state.correction_ratio = 1.0;
+        crate::effects::harmony_stream::process(
+            input,
+            input_phases,
+            envelope,
+            inv_envelope,
+            &mut state.harmony,
+            config,
+            settings,
+        )
+    } else {
+        state.harmony.reset();
+        process_vocal_effects_1024_with_state(
+            input,
+            carrier,
+            input_phases,
+            output_phases,
+            envelope,
+            inv_envelope,
+            &mut state.correction_ratio,
+            config,
+            settings,
+        )
+    }
+}
+
 /// Streaming 1024-point entry point. Retains the correction ratio between hops;
 /// leaving PitchControl releases it. Legacy by-value APIs remain unchanged.
 #[allow(clippy::too_many_arguments)]

@@ -27,6 +27,9 @@ pub struct VocalEffectsConfig {
     pub hps_num_factors: usize,
     /// Magnitude threshold below which bins are skipped during processing
     pub magnitude_threshold: f32,
+    /// Original singing voice mixed into streamed Harmony (0 = MIDI voices only).
+    /// Unvoiced consonants pass through while a chord is held.
+    pub harmony_lead_gain: f32,
 }
 
 impl Default for VocalEffectsConfig {
@@ -44,6 +47,7 @@ impl Default for VocalEffectsConfig {
             hps_downsample_factors: [2, 3, 4, 0],
             hps_num_factors: 3,
             magnitude_threshold: 1e-6,
+            harmony_lead_gain: 1.0,
         }
     }
 }

@@ -1,4 +1,5 @@
 use libm::{expf, floorf, sqrtf};
+pub mod harmony_stream;
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
