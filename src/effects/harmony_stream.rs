@@ -70,6 +70,9 @@ pub struct HarmonyState {
     targets: [f32; HARMONY_VOICES],
     initialized: [bool; HARMONY_VOICES],
     active: bool,
+    pitch_history: [f32; 2048],
+    source_frequency: f32,
+    unvoiced_hops: u8,
 }
 
 impl Default for HarmonyState {
@@ -85,6 +88,9 @@ impl HarmonyState {
             targets: [0.0; HARMONY_VOICES],
             initialized: [false; HARMONY_VOICES],
             active: false,
+            pitch_history: [0.0; 2048],
+            source_frequency: 0.0,
+            unvoiced_hops: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -93,6 +99,9 @@ impl HarmonyState {
             self.targets.fill(0.0);
             self.initialized.fill(false);
             self.active = false;
+            self.pitch_history.fill(0.0);
+            self.source_frequency = 0.0;
+            self.unvoiced_hops = 0;
         }
     }
 
@@ -152,7 +161,9 @@ pub fn process(
     settings: &MusicalSettings,
 ) -> [f32; 1024] {
     let hop = (1024.0 * config.hop_ratio) as usize;
-    let mut fundamental = frequency_analysis::find_pitch_yin(input, config);
+    state.pitch_history.copy_within(hop.., 0);
+    state.pitch_history[2048 - hop..].copy_from_slice(&input[1024 - hop..]);
+    let mut fundamental = frequency_analysis::find_pitch_harmony(&state.pitch_history, config);
     let window = Fft1024::get_hann_window();
     for (sample, &w) in input.iter_mut().zip(window) {
         *sample *= w;
@@ -168,9 +179,23 @@ pub fn process(
         &mut frequencies,
         hop,
     );
-    // Decimated YIN identifies the harmonic, while inter-frame phase provides
-    // precise tuning. YIN alone is about ten cents sharp/flat on some pure tones,
-    // enough to make a nominal unison beat against the dry lead.
+    fundamental = frequency_analysis::resolve_harmony_octave_1024(
+        fundamental,
+        &magnitudes,
+        config.sample_rate,
+        state.source_frequency,
+    );
+    if fundamental > 0.0 {
+        state.source_frequency = fundamental;
+        state.unvoiced_hops = 0;
+    } else {
+        state.unvoiced_hops = state.unvoiced_hops.saturating_add(1);
+        if state.unvoiced_hops >= 8 {
+            state.source_frequency = 0.0;
+        }
+    }
+    // Filtered period analysis identifies the harmonic; inter-frame spectral
+    // phase provides precise tuning, avoiding coarse-period beating at unison.
     if fundamental > 0.0 {
         let peak = (1..512).max_by(|&a, &b| magnitudes[a].total_cmp(&magnitudes[b])).unwrap();
         let measured = frequencies[peak] * config.sample_rate / 1024.0;
@@ -208,7 +233,9 @@ pub fn process(
     };
     let normalization = 1.0 / (lead + voice_count as f32).max(1.0);
     let dry_gain = if !voiced && count > 0 {
-        1.0
+        // Noise/consonants are shared once. Match the RMS scale of the averaged
+        // independent voiced parts instead of jumping to unity at every dropout.
+        1.0 / libm::sqrtf(count as f32)
     } else {
         lead * normalization
     };
