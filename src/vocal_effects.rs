@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-/// Allocation-free streaming state. Each MIDI harmony keeps its own phase bank.
+/// Allocation-free streaming state. Each MIDI harmony retains a coherent phase offset.
 pub struct VocalStreamState {
     correction_ratio: f32,
     harmony: crate::effects::harmony_stream::HarmonyState,

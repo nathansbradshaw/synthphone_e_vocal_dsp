@@ -1,4 +1,11 @@
-//! Polyphonic vocal resynthesis: independent phase trajectories, one shared IFFT.
+//! Polyphonic vocal resynthesis: coherent harmonic regions, one shared IFFT.
+//!
+//! Bins belonging to a vocal harmonic move together, retaining their complex
+//! phase relationships. One accumulated fundamental phase offset per voice
+//! keeps its harmonics coherent as the sung pitch changes. Symmetric-window
+//! centre correction avoids cancellation during fractional-bin interpolation.
+//! Adapted to monophonic vocals from Laroche and Dolson's frequency-domain
+//! harmonizing method: https://www.ee.columbia.edu/~dpwe/papers/LaroD99-pvoc.pdf
 use crate::{
     MusicalSettings, VocalEffectsConfig,
     dsp::{Fft1024, FftOps, frequency_analysis, wrap_phase},
@@ -59,7 +66,7 @@ fn sin_cos(phase: f32) -> (f32, f32) {
 }
 
 pub struct HarmonyState {
-    phases: [[f32; 512]; HARMONY_VOICES],
+    phases: [f32; HARMONY_VOICES],
     targets: [f32; HARMONY_VOICES],
     initialized: [bool; HARMONY_VOICES],
     active: bool,
@@ -74,7 +81,7 @@ impl Default for HarmonyState {
 impl HarmonyState {
     pub const fn new() -> Self {
         Self {
-            phases: [[0.0; 512]; HARMONY_VOICES],
+            phases: [0.0; HARMONY_VOICES],
             targets: [0.0; HARMONY_VOICES],
             initialized: [false; HARMONY_VOICES],
             active: false,
@@ -82,9 +89,7 @@ impl HarmonyState {
     }
     pub fn reset(&mut self) {
         if self.active {
-            for phase in &mut self.phases {
-                phase.fill(0.0);
-            }
+            self.phases.fill(0.0);
             self.targets.fill(0.0);
             self.initialized.fill(false);
             self.active = false;
@@ -212,51 +217,53 @@ pub fn process(
         spectrum[i].im = if i == 0 { 0.0 } else { fft[i].im * dry_gain };
     }
 
-    let mut shifted = [0.0_f32; 512];
-    let mut frequency_sum = [0.0_f32; 512];
     if voiced {
-        let advance = TAU * hop as f32 / 1024.0;
+        let bin_hz = config.sample_rate / 1024.0;
+        let centre_phase = core::f32::consts::PI * (1023.0 / 1024.0);
         for &slot in &slots[..count] {
-            let ratio = state.targets[slot] / fundamental;
-            shifted.fill(0.0);
-            frequency_sum.fill(0.0);
-            for i in 0..512 {
+            let difference = state.targets[slot] - fundamental;
+            if initialize[slot] {
+                state.phases[slot] = 0.0;
+            }
+            state.phases[slot] =
+                wrap_phase(state.phases[slot] + TAU * difference * hop as f32 / config.sample_rate);
+            let mut previous_harmonic = 0;
+            let (mut shift, mut fraction) = (0_i32, 0.0);
+            let (mut low_rotation, mut high_rotation) = ((0.0, 0.0), (0.0, 0.0));
+            for i in 1..512 {
                 if magnitudes[i] <= config.magnitude_threshold {
                     continue;
                 }
-                let residual = magnitudes[i] * inv_envelope[i];
-                let dest = i as f32 * ratio;
-                let low = floorf(dest) as usize;
-                let fraction = dest - low as f32;
-                for (bin, weight) in [(low, 1.0 - fraction), (low.saturating_add(1), fraction)] {
+                let harmonic = (roundf(i as f32 * bin_hz / fundamental) as usize).max(1);
+                let delta = harmonic as f32 * difference / bin_hz;
+                if !delta.is_finite() || delta.abs() > 1024.0 {
+                    continue;
+                }
+                if harmonic != previous_harmonic {
+                    shift = floorf(delta) as i32;
+                    fraction = delta - shift as f32;
+                    // Translate the whole harmonic lobe, preserving its complex
+                    // phase relationships. Interpolate around the window centre
+                    // so opposite-phase neighbouring FFT bins do not cancel.
+                    let phase = harmonic as f32 * state.phases[slot] - shift as f32 * centre_phase;
+                    low_rotation = sin_cos(wrap_phase(phase));
+                    high_rotation = sin_cos(wrap_phase(phase - centre_phase));
+                    previous_harmonic = harmonic;
+                }
+                for (offset, weight, (sin, cos)) in
+                    [(0, 1.0 - fraction, low_rotation), (1, fraction, high_rotation)]
+                {
+                    let destination = i as i64 + shift as i64 + offset;
+                    let bin = destination.unsigned_abs() as usize;
                     if bin >= 512 || weight <= 0.0 {
                         continue;
                     }
-                    let amplitude = residual * envelope[bin] * weight;
-                    shifted[bin] += amplitude;
-                    frequency_sum[bin] += amplitude * frequencies[i] * ratio;
+                    let gain = inv_envelope[i] * envelope[bin] * weight * normalization;
+                    let re = (fft[i].re * cos - fft[i].im * sin) * gain;
+                    let im = (fft[i].re * sin + fft[i].im * cos) * gain;
+                    spectrum[bin].re += re;
+                    spectrum[bin].im += if destination < 0 { -im } else { im };
                 }
-            }
-            for bin in 0..512 {
-                if shifted[bin] <= 1e-8 {
-                    continue;
-                }
-                let frequency = frequency_sum[bin] / shifted[bin];
-                let source = (roundf(bin as f32 / ratio) as usize).min(511);
-                // Integrate only the shift relative to the analysed source.
-                // At unity this preserves the exact input phase, including
-                // onset resets; wet and dry unison cannot drift into cancellation.
-                let delta = (frequency - frequencies[source]) * advance;
-                if initialize[slot] {
-                    state.phases[slot][bin] = 0.0;
-                }
-                let offset = wrap_phase(state.phases[slot][bin] + delta);
-                state.phases[slot][bin] = offset;
-                let phase = input_phases[source] + offset;
-                let amplitude = shifted[bin] * normalization;
-                let (sin, cos) = sin_cos(phase);
-                spectrum[bin].re += amplitude * cos;
-                spectrum[bin].im += amplitude * sin;
             }
             state.initialized[slot] = true;
         }
