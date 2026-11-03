@@ -204,6 +204,7 @@ where
 }
 
 /// Generic vocoder processing
+#[inline(never)]
 pub fn process_vocode_generic<const N: usize, const HALF_N: usize, F>(
     input_buffer: &mut [f32; N],
     carrier_buffer: &mut [f32; N],
@@ -273,6 +274,7 @@ where
 }
 
 /// Generic dry processing (pitch shifting with formant preservation but no correction)
+#[inline(never)]
 pub fn process_dry_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
     synth_buffer: Option<&mut [f32; N]>,

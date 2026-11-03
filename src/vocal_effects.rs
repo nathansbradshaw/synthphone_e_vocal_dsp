@@ -38,6 +38,7 @@ impl VocalStreamState {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 pub fn process_vocal_effects_1024_stream(
     input: &mut [f32; 1024],
     carrier: Option<&mut [f32; 1024]>,
@@ -62,17 +63,40 @@ pub fn process_vocal_effects_1024_stream(
         )
     } else {
         state.harmony.reset();
-        process_vocal_effects_1024_with_state(
-            input,
-            carrier,
-            input_phases,
-            output_phases,
-            envelope,
-            inv_envelope,
-            &mut state.correction_ratio,
-            config,
-            settings,
-        )
+        // Dispatch directly: the legacy dispatcher also contains the old
+        // harmony scratch arrays, which otherwise inflate every mode's stack.
+        if settings.mode != ProcessingMode::PitchControl {
+            state.correction_ratio = 1.0;
+        }
+        match settings.mode {
+            ProcessingMode::PitchControl => {
+                process_pitch_correction_generic_with_state::<1024, 512, Fft1024>(
+                    input,
+                    input_phases,
+                    output_phases,
+                    &mut state.correction_ratio,
+                    config,
+                    settings,
+                )
+            }
+            ProcessingMode::Dry => process_dry_generic::<1024, 512, Fft1024>(
+                input,
+                carrier,
+                input_phases,
+                output_phases,
+                config,
+                settings,
+            ),
+            ProcessingMode::Vocode => process_vocode_generic::<1024, 512, Fft1024>(
+                input,
+                carrier.expect("Carrier buffer required for vocode mode"),
+                input_phases,
+                output_phases,
+                config,
+                settings,
+            ),
+            ProcessingMode::Harmony => unreachable!(),
+        }
     }
 }
 

@@ -85,6 +85,8 @@ impl HarmonyState {
 }
 
 #[allow(clippy::too_many_arguments)]
+// Keep harmony scratch out of the caller's stack frame in other effect modes.
+#[inline(never)]
 pub fn process(
     input: &mut [f32; 1024],
     input_phases: &mut [f32; 1024],
