@@ -1,7 +1,7 @@
 //! Host-only relative benchmark against the preceding complex-IFFT algorithm.
 //! These durations are not physical Daisy CPU cycle measurements.
 use std::{hint::black_box, time::Instant};
-use synthphone_e_vocal_dsp::dsp::{extract_cepstral_envelope, Fft1024, FftOps};
+use synthphone_e_vocal_dsp::dsp::{Fft1024, FftOps, extract_cepstral_envelope};
 
 fn previous(magnitudes: &[f32; 512], envelope: &mut [f32; 512]) {
     let mut spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; 1024];
@@ -59,5 +59,10 @@ fn main() {
     }
     before.sort_by(f64::total_cmp);
     after.sort_by(f64::total_cmp);
-    println!("previous_median_us={}\nreal_fft_median_us={}\nspeedup={}\nmax_envelope_relative_error={error}\nHost relative benchmark only; physical board CPU timing remains unverified.", before[5], after[5], before[5] / after[5]);
+    println!(
+        "previous_median_us={}\nreal_fft_median_us={}\nspeedup={}\nmax_envelope_relative_error={error}\nHost relative benchmark only; physical board CPU timing remains unverified.",
+        before[5],
+        after[5],
+        before[5] / after[5]
+    );
 }

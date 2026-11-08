@@ -26,7 +26,7 @@ pub use state::{MusicalSettings, ProcessingMode};
 
 // Re-export commonly used functions
 pub use vocal_effects::{
-    VocalStreamState, process_vocal_effects_1024_stream,
-    process_vocal_effects_512, process_vocal_effects_1024, process_vocal_effects_1024_with_state,
+    VocalStreamState, process_vocal_effects_512, process_vocal_effects_1024,
+    process_vocal_effects_1024_stream, process_vocal_effects_1024_with_state,
     process_vocal_effects_2048, process_vocal_effects_4096,
 };

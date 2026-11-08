@@ -62,7 +62,9 @@ pub fn process_vocal_effects_1024_stream(
             settings,
         )
     } else {
-        state.harmony.reset();
+        if settings.mode != ProcessingMode::PitchControl {
+            state.harmony.reset();
+        }
         // Dispatch directly: the legacy dispatcher also contains the old
         // harmony scratch arrays, which otherwise inflate every mode's stack.
         if settings.mode != ProcessingMode::PitchControl {
@@ -70,11 +72,15 @@ pub fn process_vocal_effects_1024_stream(
         }
         match settings.mode {
             ProcessingMode::PitchControl => {
-                process_pitch_correction_generic_with_state::<1024, 512, Fft1024>(
+                state.harmony.clear_voices();
+                let source_pitch = state.harmony.track_pitch(input, config);
+                crate::effects::pitch_correction::<1024, 512, Fft1024>(
                     input,
                     input_phases,
                     output_phases,
-                    &mut state.correction_ratio,
+                    state.correction_ratio,
+                    Some(&mut state.correction_ratio),
+                    Some(source_pitch),
                     config,
                     settings,
                 )
@@ -101,7 +107,7 @@ pub fn process_vocal_effects_1024_stream(
 }
 
 /// Streaming 1024-point entry point. Retains the correction ratio between hops;
-/// leaving PitchControl releases it. Legacy by-value APIs remain unchanged.
+/// leaving PitchControl releases it. Legacy by-value entry points remain available.
 #[allow(clippy::too_many_arguments)]
 pub fn process_vocal_effects_1024_with_state(
     input: &mut [f32; 1024],

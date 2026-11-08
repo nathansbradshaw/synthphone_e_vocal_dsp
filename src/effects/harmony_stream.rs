@@ -52,7 +52,7 @@ fn table_sin(index: usize) -> f32 {
 
 /// Input is the sum of two phases in [-pi,pi], hence in [-tau,tau].
 #[inline(always)]
-fn sin_cos(phase: f32) -> (f32, f32) {
+pub(super) fn sin_cos(phase: f32) -> (f32, f32) {
     let positive = if phase < 0.0 { phase + TAU } else { phase };
     let position = positive * (1024.0 / TAU);
     let index = position as usize;
@@ -103,6 +103,24 @@ impl HarmonyState {
             self.source_frequency = 0.0;
             self.unvoiced_hops = 0;
         }
+    }
+
+    // Pitch Control reuses the input period history without retaining Harmony
+    // voice assignments. `active` also marks that history as needing reset.
+    pub(crate) fn clear_voices(&mut self) {
+        self.phases.fill(0.0);
+        self.targets.fill(0.0);
+        self.initialized.fill(false);
+        self.source_frequency = 0.0;
+        self.unvoiced_hops = 0;
+    }
+
+    pub(crate) fn track_pitch(&mut self, input: &[f32; 1024], config: &VocalEffectsConfig) -> f32 {
+        let hop = (1024.0 * config.hop_ratio) as usize;
+        self.pitch_history.copy_within(hop.., 0);
+        self.pitch_history[2048 - hop..].copy_from_slice(&input[1024 - hop..]);
+        self.active = true;
+        frequency_analysis::find_pitch_harmony(&self.pitch_history, config)
     }
 
     fn assign(&mut self, frequencies: &[f32; 8]) -> ([usize; 8], [bool; 8], usize) {
@@ -161,9 +179,7 @@ pub fn process(
     settings: &MusicalSettings,
 ) -> [f32; 1024] {
     let hop = (1024.0 * config.hop_ratio) as usize;
-    state.pitch_history.copy_within(hop.., 0);
-    state.pitch_history[2048 - hop..].copy_from_slice(&input[1024 - hop..]);
-    let mut fundamental = frequency_analysis::find_pitch_harmony(&state.pitch_history, config);
+    let mut fundamental = state.track_pitch(input, config);
     let window = Fft1024::get_hann_window();
     for (sample, &w) in input.iter_mut().zip(window) {
         *sample *= w;
