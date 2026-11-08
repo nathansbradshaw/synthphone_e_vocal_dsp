@@ -9,6 +9,15 @@ use crate::{
     },
 };
 
+// Shared by dry and corrected formants to keep the embedded image bounded.
+#[inline(never)]
+fn sample_envelope(envelope: &[f32], position: f32) -> f32 {
+    let position = position.clamp(0.0, (envelope.len() - 1) as f32);
+    let bin = position as usize;
+    let fraction = position - bin as f32;
+    envelope[bin] * (1.0 - fraction) + envelope[(bin + 1).min(envelope.len() - 1)] * fraction
+}
+
 /// Generic pitch correction processing (pitch correction)
 pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
@@ -134,10 +143,13 @@ where
             config,
         )
     };
-    let phase_bin = (fundamental_index.saturating_sub(1).max(1)
-        ..=(fundamental_index + 1).min(HALF_N - 1))
-        .max_by(|&a, &b| analysis_magnitudes[a].total_cmp(&analysis_magnitudes[b]))
-        .unwrap_or(fundamental_index);
+    let mut phase_bin = fundamental_index;
+    for bin in fundamental_index.saturating_sub(1).max(1)..=(fundamental_index + 1).min(HALF_N - 1)
+    {
+        if analysis_magnitudes[bin] > analysis_magnitudes[phase_bin] {
+            phase_bin = bin;
+        }
+    }
     let refined_pitch = analysis_frequencies[phase_bin] * bin_width;
     let fundamental_frequency =
         if period_pitch > 0.0 && (refined_pitch / period_pitch - 1.0).abs() > 0.005 {
@@ -203,11 +215,7 @@ where
                 previous_harmonic = harmonic;
             }
             let formant_gain = if use_formants && harmonic > 1 {
-                let position = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                let bin = position as usize;
-                let mix = position - bin as f32;
-                let shifted =
-                    envelope[bin] * (1.0 - mix) + envelope[(bin + 1).min(HALF_N - 1)] * mix;
+                let shifted = sample_envelope(&envelope, i as f32 / formant_ratio);
                 (shifted / envelope[i].max(1e-6)).clamp(0.125, 8.0)
             } else {
                 1.0
@@ -238,14 +246,7 @@ where
 
             if new_bin < HALF_N {
                 let shifted_envelope = if use_formants {
-                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                    let env_idx = env_pos as usize;
-                    let frac = env_pos - env_idx as f32;
-                    if env_idx < HALF_N - 1 {
-                        envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                    } else {
-                        envelope[env_idx]
-                    }
+                    sample_envelope(&envelope, i as f32 / formant_ratio)
                 } else {
                     1.0
                 };
@@ -443,15 +444,7 @@ where
 
             if new_bin < HALF_N {
                 let shifted_envelope = if formant != 0 {
-                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                    let env_idx = env_pos as usize;
-                    let frac = env_pos - env_idx as f32;
-
-                    if env_idx < HALF_N - 1 {
-                        envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                    } else {
-                        envelope[env_idx]
-                    }
+                    sample_envelope(&envelope, i as f32 / formant_ratio)
                 } else {
                     1.0
                 };
