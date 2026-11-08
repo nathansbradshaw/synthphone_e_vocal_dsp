@@ -270,6 +270,258 @@ pub fn collect_harmonics(fundamental_index: usize) -> [usize; 8] {
     harmonics
 }
 
+// 65-tap Hamming-windowed sinc, cutoff fs/32, normalized DC gain. Before 8x
+// decimation this suppresses the upper vocal harmonics that otherwise alias
+// into the period detector. Only complete filter windows are used.
+const HARMONY_PITCH_LOWPASS: [f32; 65] = [
+    0.0,
+    -0.000164046931,
+    -0.000359305471,
+    -0.000606243079,
+    -0.000920928480,
+    -0.001311456698,
+    -0.001774726980,
+    -0.002293894851,
+    -0.002836783196,
+    -0.003355476271,
+    -0.003787238839,
+    -0.004056805723,
+    -0.004079982049,
+    -0.003768389027,
+    -0.003035092359,
+    -0.001800768030,
+    0.0,
+    0.002412728498,
+    0.005457790418,
+    0.009126327648,
+    0.013377671053,
+    0.018138530084,
+    0.023304104904,
+    0.028741150292,
+    0.034292891038,
+    0.039785562227,
+    0.045036233671,
+    0.049861484049,
+    0.054086424045,
+    0.057553533888,
+    0.060130782092,
+    0.061718529103,
+    0.062254789952,
+    0.061718529103,
+    0.060130782092,
+    0.057553533888,
+    0.054086424045,
+    0.049861484049,
+    0.045036233671,
+    0.039785562227,
+    0.034292891038,
+    0.028741150292,
+    0.023304104904,
+    0.018138530084,
+    0.013377671053,
+    0.009126327648,
+    0.005457790418,
+    0.002412728498,
+    0.0,
+    -0.001800768030,
+    -0.003035092359,
+    -0.003768389027,
+    -0.004079982049,
+    -0.004056805723,
+    -0.003787238839,
+    -0.003355476271,
+    -0.002836783196,
+    -0.002293894851,
+    -0.001774726980,
+    -0.001311456698,
+    -0.000920928480,
+    -0.000606243079,
+    -0.000359305471,
+    -0.000164046931,
+    0.0,
+];
+
+/// Normalized period peak for streaming Harmony, based on McLeod/Wyvill's
+/// NSDF. Complete peaks and energy normalization avoid interpolating a YIN
+/// threshold slope or preferring a double period after an amplitude change.
+/// https://www.cs.otago.ac.nz/graphics/Geoff/tartini/papers/A_Smarter_Way_to_Find_Pitch.pdf
+/// The legacy detector remains unchanged for the other effect entry points.
+pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 {
+    const DECIMATION: usize = 8;
+    const CAPACITY: usize = 256;
+    let rate = config.sample_rate / DECIMATION as f32;
+    let n = (x.len().saturating_sub(HARMONY_PITCH_LOWPASS.len()) / DECIMATION + 1).min(CAPACITY);
+    let min_lag = (rate / 600.0).max(1.0) as usize;
+    let max_lag = ((rate / 80.0) as usize).min(n.saturating_sub(3));
+    if min_lag >= max_lag {
+        return 0.0;
+    }
+    let mut samples = [0.0_f32; CAPACITY];
+    for i in 0..n {
+        samples[i] = HARMONY_PITCH_LOWPASS
+            .iter()
+            .enumerate()
+            .map(|(tap, &weight)| x[i * DECIMATION + tap] * weight)
+            .sum();
+    }
+    if samples[..n].iter().map(|s| s * s).sum::<f32>() < 1e-8 {
+        return 0.0;
+    }
+    let mean = samples[..n].iter().sum::<f32>() / n as f32;
+    for value in &mut samples[..n] {
+        *value -= mean;
+    }
+    let mut nsdf = [0.0_f32; CAPACITY];
+    nsdf[0] = 1.0;
+    for lag in 1..=max_lag + 1 {
+        let (mut correlation, mut energy) = (0.0, 0.0);
+        for j in 0..n - lag {
+            let (a, b) = (samples[j], samples[j + lag]);
+            correlation += a * b;
+            energy += a * a + b * b;
+        }
+        nsdf[lag] = if energy > 1e-10 {
+            2.0 * correlation / energy
+        } else {
+            0.0
+        };
+    }
+    let first_negative = (1..=max_lag).find(|&lag| nsdf[lag] <= 0.0).unwrap_or(max_lag);
+    let start = min_lag.max(first_negative + 1);
+    if start > max_lag {
+        return 0.0;
+    }
+    let is_peak = |lag: usize| nsdf[lag] > nsdf[lag - 1] && nsdf[lag] >= nsdf[lag + 1];
+    let maximum = (start..=max_lag)
+        .filter(|&lag| is_peak(lag))
+        .map(|lag| nsdf[lag])
+        .fold(0.0_f32, f32::max);
+    if maximum < 0.8 {
+        return 0.0;
+    }
+    let threshold = maximum * 0.93;
+    let Some(best) = (start..=max_lag).find(|&lag| is_peak(lag) && nsdf[lag] >= threshold) else {
+        return 0.0;
+    };
+    let denominator = nsdf[best - 1] - 2.0 * nsdf[best] + nsdf[best + 1];
+    let offset = if denominator.abs() > 1e-10 {
+        (0.5 * (nsdf[best - 1] - nsdf[best + 1]) / denominator).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let frequency = rate / (best as f32 + offset).max(1.0);
+    if frequency.is_finite() {
+        frequency
+    } else {
+        0.0
+    }
+}
+
+/// Correct a suboctave only when the spectrum is overwhelmingly even-harmonic.
+/// An actual low voice with appreciable odd harmonics must retain its register.
+pub fn resolve_harmony_octave_1024(
+    mut frequency: f32,
+    magnitudes: &[f32; 512],
+    sample_rate: f32,
+    previous: f32,
+) -> f32 {
+    let bin_hz = sample_rate / 1024.0;
+    for _ in 0..2 {
+        if !(80.0..=300.0).contains(&frequency) {
+            break;
+        }
+        let (mut odd, mut even) = (0.0, 0.0);
+        for harmonic in 1..=8 {
+            let bin = libm::roundf(frequency * harmonic as f32 / bin_hz) as usize;
+            if bin >= 512 {
+                break;
+            }
+            let energy = magnitudes[bin] * magnitudes[bin];
+            if harmonic % 2 == 0 {
+                even += energy;
+            } else {
+                odd += energy;
+            }
+        }
+        let continuing_upper = previous > 0.0 && (frequency * 2.0 / previous - 1.0).abs() < 0.05;
+        let threshold = if continuing_upper { 0.2 } else { 0.08 };
+        if even > 1e-8 && odd < even * threshold {
+            frequency *= 2.0;
+        } else {
+            break;
+        }
+    }
+    frequency
+}
+
+#[cfg(test)]
+mod harmony_pitch_tests {
+    use super::*;
+    use crate::dsp::{Fft1024, FftOps};
+    #[test]
+    fn normalized_period_tracks_rich_voices_across_phase() {
+        let config = crate::VocalEffectsConfig::default();
+        for hz in [90.0, 130.0, 200.0, 300.0, 440.0, 590.0] {
+            for offset in [0.0, 0.7, 1.9] {
+                let input: [f32; 1024] = core::array::from_fn(|i| {
+                    let phase =
+                        core::f32::consts::TAU * hz * i as f32 / config.sample_rate + offset;
+                    (1..=10).map(|h| 0.1 / h as f32 * libm::sinf(phase * h as f32)).sum()
+                });
+                let estimate = find_pitch_harmony(&input, &config);
+                let cents = 1200.0 * libm::log2f(estimate / hz);
+                // This is the coarse period/harmonic selector. Harmony's
+                // inter-frame spectral phase refines estimates within 3%.
+                assert!(
+                    (estimate / hz - 1.0).abs() < 0.03,
+                    "{hz}Hz phase {offset}: {estimate}Hz ({cents} cents)"
+                );
+            }
+        }
+    }
+    #[test]
+    fn normalized_period_rejects_silence_and_short_input() {
+        let config = crate::VocalEffectsConfig::default();
+        assert_eq!(find_pitch_harmony(&[0.0; 1024], &config), 0.0);
+        assert_eq!(find_pitch_harmony(&[0.1; 16], &config), 0.0);
+    }
+    #[test]
+    fn decimation_filter_preserves_voice_band_and_rejects_alias_boundary() {
+        let response = |frequency: f32| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, &tap) in HARMONY_PITCH_LOWPASS.iter().enumerate() {
+                let phase = core::f32::consts::TAU * frequency * i as f32;
+                re += tap * libm::cosf(phase);
+                im += tap * libm::sinf(phase);
+            }
+            libm::sqrtf(re * re + im * im)
+        };
+        assert!((response(0.0) - 1.0).abs() < 1e-6);
+        // Less than 0.45 dB loss at the top of the supported vocal range.
+        assert!(response(600.0 / 48000.0) > 0.95);
+        assert!(response(3000.0 / 48000.0) < 0.01);
+    }
+    #[test]
+    fn spectral_octave_check_requires_even_dominance_and_preserves_low_voices() {
+        let rate = 48000.0;
+        let frequency = 98.0;
+        let spectrum = |odd_gain: f32| {
+            let mut input = core::array::from_fn(|i| {
+                let phase = core::f32::consts::TAU * frequency * i as f32 / rate;
+                ((0.15 * libm::sinf(phase * 2.0))
+                    + odd_gain * (libm::sinf(phase) + libm::sinf(phase * 3.0)))
+                    * Fft1024::get_hann_window()[i]
+            });
+            let fft = Fft1024::forward_fft(&mut input);
+            core::array::from_fn(|i| libm::sqrtf(fft[i].re * fft[i].re + fft[i].im * fft[i].im))
+        };
+        let even = spectrum(0.0);
+        assert_eq!(resolve_harmony_octave_1024(frequency, &even, rate, 0.0), 196.0);
+        let authentic_low = spectrum(0.1);
+        assert_eq!(resolve_harmony_octave_1024(frequency, &authentic_low, rate, 196.0), 98.0);
+    }
+}
+
 #[inline(always)]
 pub fn sample_rate_reduce(
     sample: f32,
