@@ -1,9 +1,22 @@
 use libm::{expf, floorf, sqrtf};
+pub mod harmony_stream;
 
 use crate::{
     MusicalSettings, VocalEffectsConfig,
-    dsp::{FftOps, calculate_pitch_shift, extract_cepstral_envelope, frequency_analysis},
+    dsp::{
+        FftOps, calculate_pitch_shift, calculate_pitch_shift_with_state, extract_cepstral_envelope,
+        frequency_analysis,
+    },
 };
+
+// Shared by dry and corrected formants to keep the embedded image bounded.
+#[inline(never)]
+fn sample_envelope(envelope: &[f32], position: f32) -> f32 {
+    let position = position.clamp(0.0, (envelope.len() - 1) as f32);
+    let bin = position as usize;
+    let fraction = position - bin as f32;
+    envelope[bin] * (1.0 - fraction) + envelope[(bin + 1).min(envelope.len() - 1)] * fraction
+}
 
 /// Generic pitch correction processing (pitch correction)
 pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
@@ -17,8 +30,60 @@ pub fn process_pitch_correction_generic<const N: usize, const HALF_N: usize, F>(
 where
     F: FftOps<N, HALF_N>,
 {
+    pitch_correction::<N, HALF_N, F>(
+        unwrapped_buffer,
+        last_input_phases,
+        last_output_phases,
+        previous_pitch_shift_ratio,
+        None,
+        None,
+        config,
+        settings,
+    )
+}
+
+/// Like the legacy entry point, but retains correction and uses configured speed/strength.
+pub fn process_pitch_correction_generic_with_state<const N: usize, const HALF_N: usize, F>(
+    unwrapped_buffer: &mut [f32; N],
+    last_input_phases: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    ratio: &mut f32,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N]
+where
+    F: FftOps<N, HALF_N>,
+{
+    pitch_correction::<N, HALF_N, F>(
+        unwrapped_buffer,
+        last_input_phases,
+        last_output_phases,
+        *ratio,
+        Some(ratio),
+        None,
+        config,
+        settings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pitch_correction<const N: usize, const HALF_N: usize, F>(
+    unwrapped_buffer: &mut [f32; N],
+    last_input_phases: &mut [f32; N],
+    last_output_phases: &mut [f32; N],
+    previous_pitch_shift_ratio: f32,
+    correction_state: Option<&mut f32>,
+    source_pitch: Option<f32>,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N]
+where
+    F: FftOps<N, HALF_N>,
+{
     let hop_size = (N as f32 * config.hop_ratio) as usize;
     let bin_width = config.sample_rate / N as f32;
+    let period_pitch = source_pitch
+        .unwrap_or_else(|| frequency_analysis::find_pitch_harmony(unwrapped_buffer, config));
 
     let analysis_window_buffer = F::get_hann_window();
     let mut full_spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
@@ -59,22 +124,59 @@ where
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
     }
 
-    let fundamental_index = frequency_analysis::find_fundamental_frequency(
+    let period_pitch = frequency_analysis::resolve_pitch_octave(
+        period_pitch,
         &analysis_magnitudes,
-        &mut hps_buffer,
-        config,
+        bin_width,
+        config.max_frequency.min(config.sample_rate * 0.5),
+        0.0,
     );
-    let fundamental_frequency = analysis_frequencies[fundamental_index] * bin_width;
+    // Refine the period estimate with a nearby spectral phase only when they
+    // agree within half a percent. Low-bin phase leakage can otherwise bias
+    // an apparently steady note by tens of cents.
+    let fundamental_index = if period_pitch > 0.0 {
+        (floorf(period_pitch / bin_width + 0.5) as usize).clamp(1, HALF_N - 1)
+    } else {
+        frequency_analysis::find_fundamental_frequency(
+            &analysis_magnitudes,
+            &mut hps_buffer,
+            config,
+        )
+    };
+    let mut phase_bin = fundamental_index;
+    for bin in fundamental_index.saturating_sub(1).max(1)..=(fundamental_index + 1).min(HALF_N - 1)
+    {
+        if analysis_magnitudes[bin] > analysis_magnitudes[phase_bin] {
+            phase_bin = bin;
+        }
+    }
+    let refined_pitch = analysis_frequencies[phase_bin] * bin_width;
+    let fundamental_frequency =
+        if period_pitch > 0.0 && (refined_pitch / period_pitch - 1.0).abs() > 0.005 {
+            period_pitch
+        } else {
+            refined_pitch
+        };
 
     // Calculate pitch shift
-    let pitch_shift_ratio = calculate_pitch_shift(
-        &analysis_magnitudes,
-        &analysis_frequencies,
-        previous_pitch_shift_ratio,
-        settings,
-        bin_width,
-        fundamental_frequency,
-    );
+    let pitch_shift_ratio = if let Some(ratio) = correction_state {
+        let voiced = analysis_magnitudes.iter().any(|&m| m > config.magnitude_threshold);
+        calculate_pitch_shift_with_state(
+            ratio,
+            settings,
+            config,
+            if voiced { fundamental_frequency } else { 0.0 },
+        )
+    } else {
+        calculate_pitch_shift(
+            &analysis_magnitudes,
+            &analysis_frequencies,
+            previous_pitch_shift_ratio,
+            settings,
+            bin_width,
+            fundamental_frequency,
+        )
+    };
 
     let formant_ratio = match formant {
         1 => settings.formant_male_ratio,
@@ -85,44 +187,92 @@ where
 
     let total_ratio = pitch_shift_ratio * octave_factor;
 
-    for i in 0..HALF_N {
-        if analysis_magnitudes[i] <= 1e-8 {
-            continue;
-        }
-        let residual = if use_formants {
-            analysis_magnitudes[i] / envelope[i].max(1e-6_f32)
-        } else {
-            analysis_magnitudes[i]
-        };
-        let new_bin = floorf(i as f32 * total_ratio + 0.5) as usize;
-
-        if new_bin < HALF_N {
-            let shifted_envelope = if use_formants {
-                let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                let env_idx = env_pos as usize;
-                let frac = env_pos - env_idx as f32;
-                if env_idx < HALF_N - 1 {
-                    envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                } else {
-                    envelope[env_idx]
-                }
+    if period_pitch > 0.0 && fundamental_frequency > 0.0 {
+        // Move complete harmonic lobes together, preserving their input phase
+        // relationships. The same center correction is used by Harmony.
+        let difference = fundamental_frequency * (total_ratio - 1.0);
+        last_output_phases[0] = crate::dsp::wrap_phase(
+            last_output_phases[0]
+                + core::f32::consts::TAU * difference * hop_size as f32 / config.sample_rate,
+        );
+        let center = core::f32::consts::PI * (N as f32 - 1.0) / N as f32;
+        let mut previous_harmonic = 0;
+        let (mut shift, mut fraction) = (0_isize, 0.0);
+        let (mut low, mut high) = ((0.0, 0.0), (0.0, 0.0));
+        for i in 1..HALF_N {
+            if analysis_magnitudes[i] <= config.magnitude_threshold {
+                continue;
+            }
+            let harmonic =
+                (floorf(i as f32 * bin_width / fundamental_frequency + 0.5) as usize).max(1);
+            if harmonic != previous_harmonic {
+                let delta = harmonic as f32 * difference / bin_width;
+                shift = floorf(delta) as isize;
+                fraction = delta - shift as f32;
+                let phase = harmonic as f32 * last_output_phases[0] - shift as f32 * center;
+                low = harmony_stream::sin_cos(crate::dsp::wrap_phase(phase));
+                high = harmony_stream::sin_cos(crate::dsp::wrap_phase(phase - center));
+                previous_harmonic = harmonic;
+            }
+            let formant_gain = if use_formants && harmonic > 1 {
+                let shifted = sample_envelope(&envelope, i as f32 / formant_ratio);
+                (shifted / envelope[i].max(1e-6)).clamp(0.125, 8.0)
             } else {
                 1.0
             };
-
-            synthesis_magnitudes[new_bin] = residual * shifted_envelope;
-            synthesis_frequencies[new_bin] = analysis_frequencies[i] * total_ratio;
+            for (offset, weight, (sin, cos)) in [(0, 1.0 - fraction, low), (1, fraction, high)] {
+                let destination = i as isize + shift + offset;
+                let bin = destination.unsigned_abs();
+                if bin >= HALF_N || weight <= 0.0 {
+                    continue;
+                }
+                let gain = weight * formant_gain;
+                let re = (fft_result[i].re * cos - fft_result[i].im * sin) * gain;
+                let im = (fft_result[i].re * sin + fft_result[i].im * cos) * gain;
+                full_spectrum[bin].re += re;
+                full_spectrum[bin].im += if destination < 0 { -im } else { im };
+            }
         }
-    }
+        full_spectrum[0].im = 0.0;
+        for i in 1..HALF_N {
+            full_spectrum[N - i] = full_spectrum[i].conj();
+        }
+    } else {
+        for i in 0..HALF_N {
+            if analysis_magnitudes[i] <= 1e-8 {
+                continue;
+            }
+            let new_bin = floorf(i as f32 * total_ratio + 0.5) as usize;
 
-    // Synthesis phase reconstruction
-    frequency_analysis::perform_phase_vocoder_synthesis::<N>(
-        &mut synthesis_magnitudes,
-        &mut synthesis_frequencies,
-        last_output_phases,
-        &mut full_spectrum,
-        hop_size,
-    );
+            if new_bin < HALF_N {
+                let shifted_envelope = if use_formants {
+                    sample_envelope(&envelope, i as f32 / formant_ratio)
+                } else {
+                    1.0
+                };
+
+                // Bound the envelope transfer so FFT leakage cannot become a new
+                // dominant pitch when the source has little energy at a formant.
+                let gain =
+                    if use_formants && (i as f32 - fundamental_frequency / bin_width).abs() > 1.5 {
+                        (shifted_envelope / envelope[i].max(1e-6_f32)).clamp(0.125, 8.0)
+                    } else {
+                        1.0
+                    };
+                synthesis_magnitudes[new_bin] = analysis_magnitudes[i] * gain;
+                synthesis_frequencies[new_bin] = analysis_frequencies[i] * total_ratio;
+            }
+        }
+
+        // Synthesis phase reconstruction
+        frequency_analysis::perform_phase_vocoder_synthesis::<N>(
+            &mut synthesis_magnitudes,
+            &mut synthesis_frequencies,
+            last_output_phases,
+            &mut full_spectrum,
+            hop_size,
+        );
+    }
 
     // Inverse FFT
     let time_domain_result = F::inverse_fft(&mut full_spectrum);
@@ -143,6 +293,7 @@ where
 }
 
 /// Generic vocoder processing
+#[inline(never)]
 pub fn process_vocode_generic<const N: usize, const HALF_N: usize, F>(
     input_buffer: &mut [f32; N],
     carrier_buffer: &mut [f32; N],
@@ -212,6 +363,7 @@ where
 }
 
 /// Generic dry processing (pitch shifting with formant preservation but no correction)
+#[inline(never)]
 pub fn process_dry_generic<const N: usize, const HALF_N: usize, F>(
     unwrapped_buffer: &mut [f32; N],
     synth_buffer: Option<&mut [f32; N]>,
@@ -292,15 +444,7 @@ where
 
             if new_bin < HALF_N {
                 let shifted_envelope = if formant != 0 {
-                    let env_pos = (i as f32 / formant_ratio).clamp(0.0, (HALF_N - 1) as f32);
-                    let env_idx = env_pos as usize;
-                    let frac = env_pos - env_idx as f32;
-
-                    if env_idx < HALF_N - 1 {
-                        envelope[env_idx] * (1.0 - frac) + envelope[env_idx + 1] * frac
-                    } else {
-                        envelope[env_idx]
-                    }
+                    sample_envelope(&envelope, i as f32 / formant_ratio)
                 } else {
                     1.0
                 };

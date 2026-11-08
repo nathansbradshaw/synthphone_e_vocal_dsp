@@ -162,6 +162,13 @@ pub fn get_scale_by_key(key: i8) -> &'static KeyScaleFrequencies {
 /// up at a fixed reference row of the scale table and the ratio is applied
 /// continuously, so shifts between whole octaves are equally valid.
 pub fn get_frequency(key: i8, note: i8, octave_ratio: f32, is_vocoder: bool) -> f32 {
+    if !(0..24).contains(&key)
+        || !(1..=12).contains(&note)
+        || !octave_ratio.is_finite()
+        || octave_ratio <= 0.0
+    {
+        return 0.0;
+    }
     let offset = if is_vocoder { 0 } else { 2 };
     let reference_row = 2 + offset;
     let note_index = reference_row * 7 + note as usize - 1;

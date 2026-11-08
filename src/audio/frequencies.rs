@@ -4,7 +4,8 @@ pub const MAX_OCTAVES: usize = 10;
 pub const NOTE_NAMES: [&str; 12] =
     ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 pub const BASE_FREQUENCIES: [f32; 12] = [
-    16.35, 17.32, 18.35, 19.45, 20.60, 21.83, 23.12, 24.50, 25.96, 27.50, 29.14, 30.87,
+    16.351_599, 17.323_915, 18.354_048, 19.445_436, 20.601_723, 21.826_765, 23.124_651, 24.499_714,
+    25.956_543, 27.5, 29.135_235, 30.867_706,
 ];
 pub const MAJOR_SCALE_STEPS: [usize; 7] = [2, 2, 1, 2, 2, 2, 1]; // W-W-H-W-W-W-H
 pub const MINOR_SCALE_STEPS: [usize; 7] = [2, 1, 2, 2, 1, 2, 2]; // W-H-W-W-H-W-W
@@ -148,35 +149,29 @@ pub const FREQUENCIES: [&[f32]; 24] = [
 ];
 
 pub fn find_nearest_note_frequency(input_frequency: f32) -> f32 {
-    let mut nearest_frequency = C_MAJOR_SCALE_FREQUENCIES[0];
-    let mut min_difference = (input_frequency - nearest_frequency).abs();
-
-    for &scale in &FREQUENCIES {
-        for &frequency in scale {
-            let difference = (input_frequency - frequency).abs();
-            if difference < min_difference {
-                min_difference = difference;
-                nearest_frequency = frequency;
-            }
-        }
-    }
-
-    nearest_frequency
+    nearest_frequency(input_frequency, FREQUENCIES.iter().flat_map(|scale| scale.iter()).copied())
 }
 
 pub fn find_nearest_note_in_key(input_frequency: f32, key_frequencies: &[f32]) -> f32 {
-    let mut nearest_frequency = key_frequencies[0];
-    let mut min_difference = (input_frequency - nearest_frequency).abs();
+    nearest_frequency(input_frequency, key_frequencies.iter().copied())
+}
 
-    for &frequency in key_frequencies {
-        let difference = (input_frequency - frequency).abs();
-        if difference < min_difference {
-            min_difference = difference;
-            nearest_frequency = frequency;
+fn nearest_frequency(input: f32, frequencies: impl Iterator<Item = f32>) -> f32 {
+    if !input.is_finite() || input <= 0.0 {
+        return 0.0;
+    }
+    let mut nearest = 0.0;
+    let mut distance = f32::INFINITY;
+    for frequency in frequencies.filter(|f| f.is_finite() && *f > 0.0) {
+        // The positive ratio is monotonic in absolute cents. Equal musical
+        // distances meet at the geometric midpoint without needing logarithms.
+        let difference = input.max(frequency) / input.min(frequency);
+        if difference < distance {
+            distance = difference;
+            nearest = frequency;
         }
     }
-
-    nearest_frequency
+    nearest
 }
 
 #[cfg(test)]

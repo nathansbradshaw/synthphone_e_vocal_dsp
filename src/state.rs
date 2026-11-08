@@ -20,6 +20,9 @@ pub struct MusicalSettings {
     pub note: i8,
     /// Midi notes provided
     pub midi_frequencies: [f32; 8],
+    /// Per-frequency amplitudes before the existing voice-count normalization.
+    /// Zero mutes a voice while retaining its pitch-shift phase. Default unity.
+    pub midi_gains: [f32; 8],
     /// Pitch ratio applied on top of the sung/target note
     /// (0.5 = octave down, 1.0 = unchanged, 2.0 = octave up)
     pub octave_ratio: f32,
@@ -39,6 +42,7 @@ impl Default for MusicalSettings {
             key: 0,
             note: 0,
             midi_frequencies: [0.0; 8],
+            midi_gains: [1.0; 8],
             octave_ratio: 1.0,
             formant: 0,
             formant_male_ratio: 0.5,
@@ -57,6 +61,7 @@ mod tests {
         let settings = MusicalSettings::default();
         assert_eq!(settings.key, 0);
         assert_eq!(settings.note, 0);
+        assert_eq!(settings.midi_gains, [1.0; 8]);
         assert!((settings.octave_ratio - 1.0).abs() < 1e-6);
         assert_eq!(settings.formant, 0);
     }
