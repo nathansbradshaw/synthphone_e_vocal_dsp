@@ -344,7 +344,7 @@ const HARMONY_PITCH_LOWPASS: [f32; 65] = [
 /// Normalized period peak for streaming Harmony, based on McLeod/Wyvill's
 /// NSDF. Complete peaks and energy normalization avoid interpolating a YIN
 /// threshold slope or preferring a double period after an amplitude change.
-/// https://www.cs.otago.ac.nz/graphics/Geoff/tartini/papers/A_Smarter_Way_to_Find_Pitch.pdf
+/// <https://www.cs.otago.ac.nz/graphics/Geoff/tartini/papers/A_Smarter_Way_to_Find_Pitch.pdf>
 /// The legacy detector remains unchanged for the other effect entry points.
 pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 {
     const DECIMATION: usize = 8;

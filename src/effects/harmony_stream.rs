@@ -5,7 +5,7 @@
 //! keeps its harmonics coherent as the sung pitch changes. Symmetric-window
 //! centre correction avoids cancellation during fractional-bin interpolation.
 //! Adapted to monophonic vocals from Laroche and Dolson's frequency-domain
-//! harmonizing method: https://www.ee.columbia.edu/~dpwe/papers/LaroD99-pvoc.pdf
+//! harmonizing method: <https://www.ee.columbia.edu/~dpwe/papers/LaroD99-pvoc.pdf>
 use crate::{
     MusicalSettings, VocalEffectsConfig,
     dsp::{Fft1024, FftOps, frequency_analysis, wrap_phase},
