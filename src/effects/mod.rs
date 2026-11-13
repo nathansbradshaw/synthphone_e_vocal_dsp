@@ -270,6 +270,19 @@ where
     F: FftOps<N, HALF_N>,
 {
     let analysis_window_buffer = F::get_hann_window();
+    let mix = if config.vocoder_mix.is_finite() {
+        config.vocoder_mix.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    // Capture the original voice before the in-place FFT. Match the wet path's
+    // analysis/synthesis windows so blending adds no extra delay or dry echo.
+    let mut output_samples = core::array::from_fn(|i| {
+        input_buffer[i] * analysis_window_buffer[i] * analysis_window_buffer[i] * (1.0 - mix)
+    });
+    if mix == 0.0 {
+        return output_samples;
+    }
     let mut full_spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
 
     // Apply windowing to both inputs
@@ -320,12 +333,9 @@ where
 
     // Inverse FFT
     let time_domain_result = F::inverse_fft(&mut full_spectrum);
-    let mut output_samples = [0.0f32; N];
 
     for i in 0..N {
-        let mut sample = time_domain_result[i].re;
-        sample *= analysis_window_buffer[i];
-        output_samples[i] = sample;
+        output_samples[i] += time_domain_result[i].re * analysis_window_buffer[i] * mix;
     }
 
     output_samples

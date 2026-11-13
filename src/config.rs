@@ -30,6 +30,9 @@ pub struct VocalEffectsConfig {
     /// Original singing voice mixed into streamed Harmony (0 = MIDI voices only).
     /// Unvoiced consonants pass through while a chord is held.
     pub harmony_lead_gain: f32,
+    /// Vocode dry/wet blend: 0 preserves the original voice, 1 is full vocoder.
+    /// Both paths use identical windows and overlap-add timing.
+    pub vocoder_mix: f32,
 }
 
 impl Default for VocalEffectsConfig {
@@ -48,6 +51,7 @@ impl Default for VocalEffectsConfig {
             hps_num_factors: 3,
             magnitude_threshold: 1e-6,
             harmony_lead_gain: 1.0,
+            vocoder_mix: 1.0,
         }
     }
 }
