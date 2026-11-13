@@ -227,7 +227,14 @@ pub fn process_with_fft<const N: usize, const HALF: usize, F: FftOps<N, HALF>>(
     // The period window lags fast slides and can reject them entirely. Follow
     // the current spectral phase using the last instantaneous register, while
     // allowing the complete period to identify a true large register change.
-    let previous = state.source_pitch;
+    // Permit small estimator error at the range edge, but never let a cached
+    // bass estimate override a newly selected higher source range.
+    let floor = config.min_frequency.max(50.0) * 0.98;
+    let previous = if state.source_pitch >= floor {
+        state.source_pitch
+    } else {
+        0.0
+    };
     let reference = if previous > 0.0
         && (fundamental == 0.0 || (0.7..1.4).contains(&(fundamental / previous)))
     {
@@ -245,7 +252,7 @@ pub fn process_with_fft<const N: usize, const HALF: usize, F: FftOps<N, HALF>>(
         // Do not turn an unvoiced consonant into a remembered pitched voice.
         let tonal = magnitudes[peak] > config.magnitude_threshold
             && magnitudes[peak] * magnitudes[peak] > 0.04 * power;
-        if tonal && (refined / reference - 1.0).abs() < 0.12 {
+        if tonal && refined >= floor && (refined / reference - 1.0).abs() < 0.12 {
             fundamental = refined;
         }
     }
