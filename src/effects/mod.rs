@@ -5,7 +5,7 @@ use crate::{
     MusicalSettings, VocalEffectsConfig,
     dsp::{
         FftOps, calculate_pitch_shift, calculate_pitch_shift_with_state, extract_cepstral_envelope,
-        frequency_analysis,
+        extract_simple_envelope, frequency_analysis,
     },
 };
 
@@ -86,13 +86,23 @@ where
         .unwrap_or_else(|| frequency_analysis::find_pitch_harmony(unwrapped_buffer, config));
 
     let analysis_window_buffer = F::get_hann_window();
+    // A rejected period is unvoiced, not an invitation to invent a spectral
+    // pitch. Preserve consonants and breath with the same two Hann windows as
+    // voiced overlap-add, and release correction before the next phrase.
+    if !period_pitch.is_finite() || period_pitch <= 0.0 {
+        if let Some(ratio) = correction_state {
+            *ratio = 1.0;
+        }
+        last_input_phases.fill(0.0);
+        last_output_phases.fill(0.0);
+        return core::array::from_fn(|i| {
+            unwrapped_buffer[i] * analysis_window_buffer[i] * analysis_window_buffer[i]
+        });
+    }
     let mut full_spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
     let mut analysis_magnitudes = [0.0; HALF_N];
     let mut analysis_frequencies = [0.0; HALF_N];
-    let mut synthesis_magnitudes = [0.0; N];
-    let mut synthesis_frequencies = [0.0; N];
     let mut envelope = [1.0f32; HALF_N];
-    let mut hps_buffer = [1.0f32; HALF_N];
 
     let formant = settings.formant;
 
@@ -115,10 +125,6 @@ where
 
     let octave_factor = settings.octave_ratio;
 
-    // Apply spectral shift
-    synthesis_magnitudes.fill(0.0);
-    synthesis_frequencies.fill(0.0);
-
     // Extract formant envelope if needed
     if formant != 0 {
         extract_cepstral_envelope::<N, HALF_N, F>(&analysis_magnitudes, &mut envelope);
@@ -134,15 +140,7 @@ where
     // Refine the period estimate with a nearby spectral phase only when they
     // agree within half a percent. Low-bin phase leakage can otherwise bias
     // an apparently steady note by tens of cents.
-    let fundamental_index = if period_pitch > 0.0 {
-        (floorf(period_pitch / bin_width + 0.5) as usize).clamp(1, HALF_N - 1)
-    } else {
-        frequency_analysis::find_fundamental_frequency(
-            &analysis_magnitudes,
-            &mut hps_buffer,
-            config,
-        )
-    };
+    let fundamental_index = (floorf(period_pitch / bin_width + 0.5) as usize).clamp(1, HALF_N - 1);
     let mut phase_bin = fundamental_index;
     for bin in fundamental_index.saturating_sub(1).max(1)..=(fundamental_index + 1).min(HALF_N - 1)
     {
@@ -151,12 +149,11 @@ where
         }
     }
     let refined_pitch = analysis_frequencies[phase_bin] * bin_width;
-    let fundamental_frequency =
-        if period_pitch > 0.0 && (refined_pitch / period_pitch - 1.0).abs() > 0.005 {
-            period_pitch
-        } else {
-            refined_pitch
-        };
+    let fundamental_frequency = if (refined_pitch / period_pitch - 1.0).abs() > 0.005 {
+        period_pitch
+    } else {
+        refined_pitch
+    };
 
     // Calculate pitch shift
     let pitch_shift_ratio = if let Some(ratio) = correction_state {
@@ -187,7 +184,7 @@ where
 
     let total_ratio = pitch_shift_ratio * octave_factor;
 
-    if period_pitch > 0.0 && fundamental_frequency > 0.0 {
+    {
         // Move complete harmonic lobes together, preserving their input phase
         // relationships. The same center correction is used by Harmony.
         let difference = fundamental_frequency * (total_ratio - 1.0);
@@ -237,41 +234,6 @@ where
         for i in 1..HALF_N {
             full_spectrum[N - i] = full_spectrum[i].conj();
         }
-    } else {
-        for i in 0..HALF_N {
-            if analysis_magnitudes[i] <= 1e-8 {
-                continue;
-            }
-            let new_bin = floorf(i as f32 * total_ratio + 0.5) as usize;
-
-            if new_bin < HALF_N {
-                let shifted_envelope = if use_formants {
-                    sample_envelope(&envelope, i as f32 / formant_ratio)
-                } else {
-                    1.0
-                };
-
-                // Bound the envelope transfer so FFT leakage cannot become a new
-                // dominant pitch when the source has little energy at a formant.
-                let gain =
-                    if use_formants && (i as f32 - fundamental_frequency / bin_width).abs() > 1.5 {
-                        (shifted_envelope / envelope[i].max(1e-6_f32)).clamp(0.125, 8.0)
-                    } else {
-                        1.0
-                    };
-                synthesis_magnitudes[new_bin] = analysis_magnitudes[i] * gain;
-                synthesis_frequencies[new_bin] = analysis_frequencies[i] * total_ratio;
-            }
-        }
-
-        // Synthesis phase reconstruction
-        frequency_analysis::perform_phase_vocoder_synthesis::<N>(
-            &mut synthesis_magnitudes,
-            &mut synthesis_frequencies,
-            last_output_phases,
-            &mut full_spectrum,
-            hop_size,
-        );
     }
 
     // Inverse FFT
@@ -292,16 +254,17 @@ where
     output_samples
 }
 
-/// Generic vocoder processing
+/// Transfer a smoothed vocal envelope onto the original carrier spectrum.
+/// Apply per-note gains while constructing a polyphonic carrier; this function
+/// preserves those gains rather than normalizing them away bin by bin.
 #[inline(never)]
 pub fn process_vocode_generic<const N: usize, const HALF_N: usize, F>(
     input_buffer: &mut [f32; N],
     carrier_buffer: &mut [f32; N],
-    // TODO if we don't need this, remove it
     _last_input_phases: &mut [f32; N],
     _last_output_phases: &mut [f32; N],
-    _config: &VocalEffectsConfig,
-    _settings: &MusicalSettings,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
 ) -> [f32; N]
 where
     F: FftOps<N, HALF_N>,
@@ -318,35 +281,41 @@ where
     // Forward FFT on both signals
     let modulator_fft = F::forward_fft(input_buffer);
     let carrier_fft = F::forward_fft(carrier_buffer);
-
-    // Process first half of spectrum (including DC and Nyquist)
-    let num_bins = HALF_N.min(modulator_fft.len()).min(carrier_fft.len());
-    for i in 0..num_bins {
-        // Get modulator magnitude (vocal envelope)
-        let mod_mag = sqrtf(
-            modulator_fft[i].re * modulator_fft[i].re + modulator_fft[i].im * modulator_fft[i].im,
-        );
-
-        // Get carrier magnitude
-        let car_mag =
-            sqrtf(carrier_fft[i].re * carrier_fft[i].re + carrier_fft[i].im * carrier_fft[i].im);
-
-        // Scale carrier by modulator envelope
-        let scale_factor = if car_mag > 0.0001 {
-            mod_mag / car_mag
+    // microfft packs Nyquist into DC.im. It is not a complex DC component.
+    modulator_fft[0].im = 0.0;
+    let magnitudes = core::array::from_fn(|i| {
+        sqrtf(modulator_fft[i].re * modulator_fft[i].re + modulator_fft[i].im * modulator_fft[i].im)
+    });
+    // Two bounded moving averages remove the sung harmonic comb. Multiplying
+    // the original carrier (rather than replacing its bin magnitudes) preserves
+    // its excitation, per-note faders and exact zero when all carriers are muted.
+    let mut first = [0.0; HALF_N];
+    let mut envelope = [0.0; HALF_N];
+    extract_simple_envelope(&magnitudes, &mut first);
+    extract_simple_envelope(&first, &mut envelope);
+    let ratio = match settings.formant {
+        1 => settings.formant_male_ratio,
+        2 => settings.formant_female_ratio,
+        _ => 1.0,
+    };
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(0.1, 4.0)
+    } else {
+        1.0
+    };
+    // A Hann-windowed sinusoid occupies ~N/2 summed magnitude. The smoother
+    // spans 17 bins; this fixed calibration keeps gain linear in the carrier.
+    let calibration = 34.0 / N as f32;
+    for i in 1..HALF_N {
+        let magnitude = sample_envelope(&envelope, i as f32 / ratio);
+        let gain = if magnitude > config.magnitude_threshold {
+            magnitude * calibration
         } else {
             0.0
         };
-
-        // Apply scaling to carrier, keeping carrier phase
-        full_spectrum[i].re = carrier_fft[i].re * scale_factor;
-        full_spectrum[i].im = carrier_fft[i].im * scale_factor;
-
-        // Conjugate symmetry for real output
-        if i > 0 && i < num_bins {
-            full_spectrum[N - i].re = full_spectrum[i].re;
-            full_spectrum[N - i].im = -full_spectrum[i].im;
-        }
+        full_spectrum[i].re = carrier_fft[i].re * gain;
+        full_spectrum[i].im = carrier_fft[i].im * gain;
+        full_spectrum[N - i] = full_spectrum[i].conj();
     }
 
     // Inverse FFT

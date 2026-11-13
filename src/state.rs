@@ -20,8 +20,10 @@ pub struct MusicalSettings {
     pub note: i8,
     /// Midi notes provided
     pub midi_frequencies: [f32; 8],
-    /// Per-frequency amplitudes before the existing voice-count normalization.
-    /// Zero mutes a voice while retaining its pitch-shift phase. Default unity.
+    /// Per-frequency amplitudes before voice-count normalization in Harmony.
+    /// For Vocode, the caller applies these to individual carrier oscillators
+    /// before mixing: a combined carrier cannot recover separate MIDI voices.
+    /// Zero mutes a voice while retaining its phase. Default unity.
     pub midi_gains: [f32; 8],
     /// Pitch ratio applied on top of the sung/target note
     /// (0.5 = octave down, 1.0 = unchanged, 2.0 = octave up)
