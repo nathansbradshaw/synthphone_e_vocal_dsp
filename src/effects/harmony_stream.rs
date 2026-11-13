@@ -260,7 +260,7 @@ pub fn process(
     let dry_gain = if !voiced && count > 0 {
         // Noise/consonants are shared once. Match the RMS scale of the averaged
         // independent voiced parts instead of jumping to unity at every dropout.
-        if slots[..count].iter().all(|&slot| voice_gains[slot] == 1.0) {
+        if lead == 0.0 && slots[..count].iter().all(|&slot| voice_gains[slot] == 1.0) {
             1.0 / libm::sqrtf(count as f32)
         } else {
             let power = slots[..count]
@@ -298,7 +298,19 @@ pub fn process(
                 if magnitudes[i] <= config.magnitude_threshold {
                     continue;
                 }
-                let harmonic = (roundf(i as f32 * bin_hz / fundamental) as usize).max(1);
+                // Phase-derived frequency keeps a low vocal's whole FFT lobe
+                // together. Bin centres alone can split a 90 Hz tone into
+                // differently shifted partials. Retain bin-centre ownership for
+                // invalid estimates or values beyond a two-bin neighbourhood.
+                let measured = frequencies[i];
+                let position =
+                    if measured.is_finite() && measured > 0.0 && (measured - i as f32).abs() <= 2.0
+                    {
+                        measured
+                    } else {
+                        i as f32
+                    };
+                let harmonic = (roundf(position * bin_hz / fundamental) as usize).max(1);
                 let delta = harmonic as f32 * difference / bin_hz;
                 if !delta.is_finite() || delta.abs() > 1024.0 {
                     continue;
