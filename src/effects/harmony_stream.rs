@@ -107,10 +107,10 @@ impl HarmonyState {
         self.initialized.fill(false);
     }
 
-    pub(crate) fn track_pitch(&mut self, input: &[f32; 1024], config: &VocalEffectsConfig) -> f32 {
-        let hop = (1024.0 * config.hop_ratio) as usize;
+    pub(crate) fn track_pitch(&mut self, input: &[f32], config: &VocalEffectsConfig) -> f32 {
+        let hop = (input.len() as f32 * config.hop_ratio) as usize;
         self.pitch_history.copy_within(hop.., 0);
-        self.pitch_history[2048 - hop..].copy_from_slice(&input[1024 - hop..]);
+        self.pitch_history[2048 - hop..].copy_from_slice(&input[input.len() - hop..]);
         self.active = true;
         frequency_analysis::find_pitch_harmony(&self.pitch_history, config)
     }
@@ -170,17 +170,42 @@ pub fn process(
     config: &VocalEffectsConfig,
     settings: &MusicalSettings,
 ) -> [f32; 1024] {
-    let hop = (1024.0 * config.hop_ratio) as usize;
+    process_with_fft::<1024, 512, Fft1024>(
+        input,
+        input_phases,
+        envelope,
+        inv_envelope,
+        state,
+        config,
+        settings,
+    )
+}
+
+/// The same harmonizer with a selectable analysis window. Callers must supply
+/// overlap-add normalization for their chosen window/hop and retain all state.
+/// The device entry point above continues to use 1024 samples.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+pub fn process_with_fft<const N: usize, const HALF: usize, F: FftOps<N, HALF>>(
+    input: &mut [f32; N],
+    input_phases: &mut [f32; N],
+    envelope: &mut [f32; HALF],
+    inv_envelope: &mut [f32; HALF],
+    state: &mut HarmonyState,
+    config: &VocalEffectsConfig,
+    settings: &MusicalSettings,
+) -> [f32; N] {
+    let hop = (N as f32 * config.hop_ratio) as usize;
     let mut fundamental = state.track_pitch(input, config);
-    let window = Fft1024::get_hann_window();
+    let window = F::get_hann_window();
     for (sample, &w) in input.iter_mut().zip(window) {
         *sample *= w;
     }
-    let fft = Fft1024::forward_fft(input);
-    let mut spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; 1024];
-    let mut magnitudes = [0.0; 512];
-    let mut frequencies = [0.0; 512];
-    frequency_analysis::perform_phase_vocoder_analysis::<1024, 512>(
+    let fft = F::forward_fft(input);
+    let mut spectrum = [microfft::Complex32 { re: 0.0, im: 0.0 }; N];
+    let mut magnitudes = [0.0; HALF];
+    let mut frequencies = [0.0; HALF];
+    frequency_analysis::perform_phase_vocoder_analysis::<N, HALF>(
         fft,
         input_phases,
         &mut magnitudes,
@@ -192,8 +217,8 @@ pub fn process(
     // Filtered period analysis identifies the harmonic; inter-frame spectral
     // phase provides precise tuning, avoiding coarse-period beating at unison.
     if fundamental > 0.0 {
-        let peak = (1..512).max_by(|&a, &b| magnitudes[a].total_cmp(&magnitudes[b])).unwrap();
-        let measured = frequencies[peak] * config.sample_rate / 1024.0;
+        let peak = (1..HALF).max_by(|&a, &b| magnitudes[a].total_cmp(&magnitudes[b])).unwrap();
+        let measured = frequencies[peak] * config.sample_rate / N as f32;
         let harmonic = roundf(measured / fundamental).max(1.0);
         let refined = measured / harmonic;
         if (refined / fundamental - 1.0).abs() < 0.03 {
@@ -203,17 +228,17 @@ pub fn process(
 
     // Refresh the O(N) envelope each hop. A silence-cached envelope must not
     // erase the start of a word for up to the old 85ms refresh interval.
-    const WIDTH: usize = 16;
-    let mut sum: f32 = magnitudes[..=WIDTH].iter().sum();
-    let (mut lo, mut hi) = (0, WIDTH);
-    for i in 0..512 {
+    let width = N / 64;
+    let mut sum: f32 = magnitudes[..=width].iter().sum();
+    let (mut lo, mut hi) = (0, width);
+    for i in 0..HALF {
         envelope[i] = sum / (hi - lo + 1) as f32;
         inv_envelope[i] = 1.0 / envelope[i].max(1e-6);
-        if hi + 1 < 512 {
+        if hi + 1 < HALF {
             hi += 1;
             sum += magnitudes[hi];
         }
-        if lo + WIDTH < i + 1 {
+        if lo + width < i + 1 {
             sum -= magnitudes[lo];
             lo += 1;
         }
@@ -251,14 +276,14 @@ pub fn process(
     } else {
         lead * normalization
     };
-    for i in 0..512 {
+    for i in 0..HALF {
         spectrum[i].re = fft[i].re * dry_gain;
         spectrum[i].im = if i == 0 { 0.0 } else { fft[i].im * dry_gain };
     }
 
     if voiced {
-        let bin_hz = config.sample_rate / 1024.0;
-        let centre_phase = core::f32::consts::PI * (1023.0 / 1024.0);
+        let bin_hz = config.sample_rate / N as f32;
+        let centre_phase = core::f32::consts::PI * ((N - 1) as f32 / N as f32);
         for &slot in &slots[..count] {
             let difference = state.targets[slot] - fundamental;
             if initialize[slot] {
@@ -273,7 +298,7 @@ pub fn process(
             let mut previous_harmonic = 0;
             let (mut shift, mut fraction) = (0_i32, 0.0);
             let (mut low_rotation, mut high_rotation) = ((0.0, 0.0), (0.0, 0.0));
-            for i in 1..512 {
+            for i in 1..HALF {
                 if magnitudes[i] <= config.magnitude_threshold {
                     continue;
                 }
@@ -291,7 +316,7 @@ pub fn process(
                     };
                 let harmonic = (roundf(position * bin_hz / fundamental) as usize).max(1);
                 let delta = harmonic as f32 * difference / bin_hz;
-                if !delta.is_finite() || delta.abs() > 1024.0 {
+                if !delta.is_finite() || delta.abs() > N as f32 {
                     continue;
                 }
                 if harmonic != previous_harmonic {
@@ -310,7 +335,7 @@ pub fn process(
                 {
                     let destination = i as i64 + shift as i64 + offset;
                     let bin = destination.unsigned_abs() as usize;
-                    if bin >= 512 || weight <= 0.0 {
+                    if bin >= HALF || weight <= 0.0 {
                         continue;
                     }
                     let gain = inv_envelope[i]
@@ -329,13 +354,13 @@ pub fn process(
     }
     // IFFT is linear, so adding independently phased complex voices first
     // preserves their separate pitches without one IFFT per harmony voice.
-    for bin in 1..512 {
-        spectrum[1024 - bin] = spectrum[bin].conj();
+    for bin in 1..HALF {
+        spectrum[N - bin] = spectrum[bin].conj();
     }
     spectrum[0].im = 0.0;
-    let time = Fft1024::inverse_fft(&mut spectrum);
-    let mut output = [0.0; 1024];
-    for i in 0..1024 {
+    let time = F::inverse_fft(&mut spectrum);
+    let mut output = [0.0; N];
+    for i in 0..N {
         output[i] = time[i].re * window[i];
     }
     output
