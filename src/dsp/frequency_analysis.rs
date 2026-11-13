@@ -352,7 +352,7 @@ pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 
     let rate = config.sample_rate / DECIMATION as f32;
     let n = (x.len().saturating_sub(HARMONY_PITCH_LOWPASS.len()) / DECIMATION + 1).min(CAPACITY);
     let min_lag = (rate / 600.0).max(1.0) as usize;
-    let max_lag = ((rate / 80.0) as usize).min(n.saturating_sub(3));
+    let max_lag = ((rate / config.min_frequency.max(50.0)) as usize).min(n.saturating_sub(3));
     if min_lag >= max_lag {
         return 0.0;
     }
@@ -507,6 +507,25 @@ mod harmony_pitch_tests {
         let config = crate::VocalEffectsConfig::default();
         assert_eq!(find_pitch_harmony(&[0.0; 1024], &config), 0.0);
         assert_eq!(find_pitch_harmony(&[0.1; 16], &config), 0.0);
+    }
+    #[test]
+    fn streaming_history_tracks_bass_notes_at_recording_and_device_clocks() {
+        for sample_rate in [44100.0, 48000.0] {
+            let config = crate::VocalEffectsConfig { sample_rate, ..Default::default() };
+            for hz in [50.0, 55.0, 65.4064, 73.6, 77.7817] {
+                for offset in [0.0, 0.7, 1.9] {
+                    let input: [f32; 2048] = core::array::from_fn(|i| {
+                        let phase = core::f32::consts::TAU * hz * i as f32 / sample_rate + offset;
+                        (1..=8).map(|h| 0.1 / h as f32 * libm::sinf(phase * h as f32)).sum()
+                    });
+                    let pitch = find_pitch_harmony(&input, &config);
+                    assert!(
+                        (pitch / hz - 1.0).abs() < 0.03,
+                        "{sample_rate} Hz clock, {hz} Hz bass: {pitch}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn decimation_filter_preserves_voice_band_and_rejects_alias_boundary() {
