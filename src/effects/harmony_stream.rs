@@ -15,14 +15,14 @@ use libm::{floorf, roundf};
 
 pub const HARMONY_VOICES: usize = 8;
 
-// A quarter-wave table gives 1024 samples per turn using 1028 bytes of flash.
-// Linear interpolation has <5e-6 absolute error; unlike libm calls its cost is
+// A quarter-wave table gives 512 samples per turn using 516 bytes of flash.
+// Curvature-corrected interpolation has <5e-6 absolute error; its cost is
 // bounded and small enough for independent voices at every FFT hop on M7.
-const fn quarter_wave() -> [f32; 257] {
-    let mut table = [0.0; 257];
+const fn quarter_wave() -> [f32; 129] {
+    let mut table = [0.0; 129];
     let mut i = 0;
-    while i <= 256 {
-        let x = i as f64 * core::f64::consts::FRAC_PI_2 / 256.0;
+    while i <= 128 {
+        let x = i as f64 * core::f64::consts::FRAC_PI_2 / 128.0;
         let x2 = x * x;
         table[i] = (x
             * (1.0
@@ -36,17 +36,17 @@ const fn quarter_wave() -> [f32; 257] {
     }
     table
 }
-static QUARTER: [f32; 257] = quarter_wave();
+static QUARTER: [f32; 129] = quarter_wave();
 
 #[inline(always)]
 fn table_sin(index: usize) -> f32 {
-    let index = index & 1023;
-    let offset = index & 255;
-    match index >> 8 {
+    let index = index & 511;
+    let offset = index & 127;
+    match index >> 7 {
         0 => QUARTER[offset],
-        1 => QUARTER[256 - offset],
+        1 => QUARTER[128 - offset],
         2 => -QUARTER[offset],
-        _ => -QUARTER[256 - offset],
+        _ => -QUARTER[128 - offset],
     }
 }
 
@@ -54,14 +54,16 @@ fn table_sin(index: usize) -> f32 {
 #[inline(always)]
 pub(super) fn sin_cos(phase: f32) -> (f32, f32) {
     let positive = if phase < 0.0 { phase + TAU } else { phase };
-    let position = positive * (1024.0 / TAU);
+    let position = positive * (512.0 / TAU);
     let index = position as usize;
     let fraction = position - index as f32;
     let s = table_sin(index);
-    let c = table_sin(index + 256);
+    let c = table_sin(index + 128);
+    // Correct the leading chord-interpolation error using sin'' = -sin.
+    let curvature = 1.0 + 0.000_075_299_1 * fraction * (1.0 - fraction);
     (
-        s + fraction * (table_sin(index + 1) - s),
-        c + fraction * (table_sin(index + 257) - c),
+        (s + fraction * (table_sin(index + 1) - s)) * curvature,
+        (c + fraction * (table_sin(index + 129) - c)) * curvature,
     )
 }
 
@@ -71,6 +73,8 @@ pub struct HarmonyState {
     initialized: [bool; HARMONY_VOICES],
     active: bool,
     pitch_history: [f32; 2048],
+    source_pitch: f32,
+    unvoiced_hops: u8,
 }
 
 impl Default for HarmonyState {
@@ -87,6 +91,8 @@ impl HarmonyState {
             initialized: [false; HARMONY_VOICES],
             active: false,
             pitch_history: [0.0; 2048],
+            source_pitch: 0.0,
+            unvoiced_hops: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -96,6 +102,8 @@ impl HarmonyState {
             self.initialized.fill(false);
             self.active = false;
             self.pitch_history.fill(0.0);
+            self.source_pitch = 0.0;
+            self.unvoiced_hops = 0;
         }
     }
 
@@ -105,6 +113,8 @@ impl HarmonyState {
         self.phases.fill(0.0);
         self.targets.fill(0.0);
         self.initialized.fill(false);
+        self.source_pitch = 0.0;
+        self.unvoiced_hops = 0;
     }
 
     pub(crate) fn track_pitch(&mut self, input: &[f32], config: &VocalEffectsConfig) -> f32 {
@@ -214,15 +224,38 @@ pub fn process_with_fft<const N: usize, const HALF: usize, F: FftOps<N, HALF>>(
     );
     // The complete period identifies the register. Reinterpreting it from
     // even/odd spectral balance makes a vowel change look like an octave jump.
-    // Filtered period analysis identifies the harmonic; inter-frame spectral
-    // phase provides precise tuning, avoiding coarse-period beating at unison.
-    if fundamental > 0.0 {
+    // The period window lags fast slides and can reject them entirely. Follow
+    // the current spectral phase using the last instantaneous register, while
+    // allowing the complete period to identify a true large register change.
+    let previous = state.source_pitch;
+    let reference = if previous > 0.0
+        && (fundamental == 0.0 || (0.7..1.4).contains(&(fundamental / previous)))
+    {
+        previous
+    } else {
+        fundamental
+    };
+    if reference > 0.0 {
         let peak = (1..HALF).max_by(|&a, &b| magnitudes[a].total_cmp(&magnitudes[b])).unwrap();
         let measured = frequencies[peak] * config.sample_rate / N as f32;
-        let harmonic = roundf(measured / fundamental).max(1.0);
+        let harmonic = roundf(measured / reference).max(1.0);
         let refined = measured / harmonic;
-        if (refined / fundamental - 1.0).abs() < 0.03 {
+        let power = magnitudes.iter().map(|m| m * m).sum::<f32>();
+        // White noise normally has only ~1% of its energy in its strongest bin.
+        // Do not turn an unvoiced consonant into a remembered pitched voice.
+        let tonal = magnitudes[peak] > config.magnitude_threshold
+            && magnitudes[peak] * magnitudes[peak] > 0.04 * power;
+        if tonal && (refined / reference - 1.0).abs() < 0.12 {
             fundamental = refined;
+        }
+    }
+    if fundamental > 0.0 {
+        state.source_pitch = fundamental;
+        state.unvoiced_hops = 0;
+    } else {
+        state.unvoiced_hops = state.unvoiced_hops.saturating_add(1);
+        if state.unvoiced_hops > 48 {
+            state.source_pitch = 0.0;
         }
     }
 
