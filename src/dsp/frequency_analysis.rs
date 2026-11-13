@@ -392,19 +392,18 @@ pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 
         return 0.0;
     }
     let is_peak = |lag: usize| nsdf[lag] > nsdf[lag - 1] && nsdf[lag] >= nsdf[lag + 1];
-    let peak = |lag: usize| {
+    let peak_height = |lag: usize| {
         let denominator = nsdf[lag - 1] - 2.0 * nsdf[lag] + nsdf[lag + 1];
-        let offset = if denominator.abs() > 1e-10 {
-            (0.5 * (nsdf[lag - 1] - nsdf[lag + 1]) / denominator).clamp(-1.0, 1.0)
+        if denominator < -1e-10 {
+            let difference = nsdf[lag - 1] - nsdf[lag + 1];
+            (nsdf[lag] - 0.125 * difference * difference / denominator).min(1.0)
         } else {
-            0.0
-        };
-        let height = nsdf[lag] - 0.25 * (nsdf[lag - 1] - nsdf[lag + 1]) * offset;
-        (offset, height.min(1.0))
+            nsdf[lag]
+        }
     };
     let maximum = (start..=max_lag)
         .filter(|&lag| is_peak(lag))
-        .map(|lag| peak(lag).1)
+        .map(peak_height)
         .fold(0.0_f32, f32::max);
     if maximum < 0.8 {
         return 0.0;
@@ -413,10 +412,16 @@ pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 
     // non-integer first period. A loose relative gate also accepts the half
     // period as vowels strengthen their even harmonics, causing octave jumps.
     let threshold = maximum * 0.99;
-    let Some(best) = (start..=max_lag).find(|&lag| is_peak(lag) && peak(lag).1 >= threshold) else {
+    let Some(best) = (start..=max_lag).find(|&lag| is_peak(lag) && peak_height(lag) >= threshold)
+    else {
         return 0.0;
     };
-    let offset = peak(best).0;
+    let denominator = nsdf[best - 1] - 2.0 * nsdf[best] + nsdf[best + 1];
+    let offset = if denominator.abs() > 1e-10 {
+        (0.5 * (nsdf[best - 1] - nsdf[best + 1]) / denominator).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
     let frequency = rate / (best as f32 + offset).max(1.0);
     if frequency.is_finite() {
         frequency
