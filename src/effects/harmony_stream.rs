@@ -15,14 +15,14 @@ use libm::{floorf, roundf};
 
 pub const HARMONY_VOICES: usize = 8;
 
-// A quarter-wave table gives 512 samples per turn using 516 bytes of flash.
+// A quarter-wave table gives 256 samples per turn using 260 bytes of flash.
 // Curvature-corrected interpolation has <5e-6 absolute error; its cost is
 // bounded and small enough for independent voices at every FFT hop on M7.
-const fn quarter_wave() -> [f32; 129] {
-    let mut table = [0.0; 129];
+const fn quarter_wave() -> [f32; 65] {
+    let mut table = [0.0; 65];
     let mut i = 0;
-    while i <= 128 {
-        let x = i as f64 * core::f64::consts::FRAC_PI_2 / 128.0;
+    while i <= 64 {
+        let x = i as f64 * core::f64::consts::FRAC_PI_2 / 64.0;
         let x2 = x * x;
         table[i] = (x
             * (1.0
@@ -36,17 +36,17 @@ const fn quarter_wave() -> [f32; 129] {
     }
     table
 }
-static QUARTER: [f32; 129] = quarter_wave();
+static QUARTER: [f32; 65] = quarter_wave();
 
 #[inline(always)]
 fn table_sin(index: usize) -> f32 {
-    let index = index & 511;
-    let offset = index & 127;
-    match index >> 7 {
+    let index = index & 255;
+    let offset = index & 63;
+    match index >> 6 {
         0 => QUARTER[offset],
-        1 => QUARTER[128 - offset],
+        1 => QUARTER[64 - offset],
         2 => -QUARTER[offset],
-        _ => -QUARTER[128 - offset],
+        _ => -QUARTER[64 - offset],
     }
 }
 
@@ -54,16 +54,16 @@ fn table_sin(index: usize) -> f32 {
 #[inline(always)]
 pub(super) fn sin_cos(phase: f32) -> (f32, f32) {
     let positive = if phase < 0.0 { phase + TAU } else { phase };
-    let position = positive * (512.0 / TAU);
+    let position = positive * (256.0 / TAU);
     let index = position as usize;
     let fraction = position - index as f32;
     let s = table_sin(index);
-    let c = table_sin(index + 128);
+    let c = table_sin(index + 64);
     // Correct the leading chord-interpolation error using sin'' = -sin.
-    let curvature = 1.0 + 0.000_075_299_1 * fraction * (1.0 - fraction);
+    let curvature = 1.0 + 0.000_301_196_4 * fraction * (1.0 - fraction);
     (
         (s + fraction * (table_sin(index + 1) - s)) * curvature,
-        (c + fraction * (table_sin(index + 129) - c)) * curvature,
+        (c + fraction * (table_sin(index + 65) - c)) * curvature,
     )
 }
 
