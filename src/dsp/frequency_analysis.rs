@@ -392,23 +392,31 @@ pub fn find_pitch_harmony(x: &[f32], config: &crate::VocalEffectsConfig) -> f32 
         return 0.0;
     }
     let is_peak = |lag: usize| nsdf[lag] > nsdf[lag - 1] && nsdf[lag] >= nsdf[lag + 1];
+    let peak = |lag: usize| {
+        let denominator = nsdf[lag - 1] - 2.0 * nsdf[lag] + nsdf[lag + 1];
+        let offset = if denominator.abs() > 1e-10 {
+            (0.5 * (nsdf[lag - 1] - nsdf[lag + 1]) / denominator).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        let height = nsdf[lag] - 0.25 * (nsdf[lag - 1] - nsdf[lag + 1]) * offset;
+        (offset, height.min(1.0))
+    };
     let maximum = (start..=max_lag)
         .filter(|&lag| is_peak(lag))
-        .map(|lag| nsdf[lag])
+        .map(|lag| peak(lag).1)
         .fold(0.0_f32, f32::max);
     if maximum < 0.8 {
         return 0.0;
     }
-    let threshold = maximum * 0.93;
-    let Some(best) = (start..=max_lag).find(|&lag| is_peak(lag) && nsdf[lag] >= threshold) else {
+    // Compare complete, interpolated peaks: integer samples alone penalize a
+    // non-integer first period. A loose relative gate also accepts the half
+    // period as vowels strengthen their even harmonics, causing octave jumps.
+    let threshold = maximum * 0.99;
+    let Some(best) = (start..=max_lag).find(|&lag| is_peak(lag) && peak(lag).1 >= threshold) else {
         return 0.0;
     };
-    let denominator = nsdf[best - 1] - 2.0 * nsdf[best] + nsdf[best + 1];
-    let offset = if denominator.abs() > 1e-10 {
-        (0.5 * (nsdf[best - 1] - nsdf[best + 1]) / denominator).clamp(-1.0, 1.0)
-    } else {
-        0.0
-    };
+    let offset = peak(best).0;
     let frequency = rate / (best as f32 + offset).max(1.0);
     if frequency.is_finite() {
         frequency
@@ -470,7 +478,8 @@ mod harmony_pitch_tests {
     #[test]
     fn normalized_period_tracks_rich_voices_across_phase() {
         let config = crate::VocalEffectsConfig::default();
-        for hz in [90.0, 130.0, 200.0, 300.0, 440.0, 590.0] {
+        let midi = (40..=74).map(|note| 440.0 * libm::powf(2.0, (note as f32 - 69.0) / 12.0));
+        for hz in midi.chain([90.0, 130.0, 200.0, 300.0, 440.0, 590.0]) {
             for offset in [0.0, 0.7, 1.9] {
                 let input: [f32; 1024] = core::array::from_fn(|i| {
                     let phase =

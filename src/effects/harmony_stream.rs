@@ -71,8 +71,6 @@ pub struct HarmonyState {
     initialized: [bool; HARMONY_VOICES],
     active: bool,
     pitch_history: [f32; 2048],
-    source_frequency: f32,
-    unvoiced_hops: u8,
 }
 
 impl Default for HarmonyState {
@@ -89,8 +87,6 @@ impl HarmonyState {
             initialized: [false; HARMONY_VOICES],
             active: false,
             pitch_history: [0.0; 2048],
-            source_frequency: 0.0,
-            unvoiced_hops: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -100,8 +96,6 @@ impl HarmonyState {
             self.initialized.fill(false);
             self.active = false;
             self.pitch_history.fill(0.0);
-            self.source_frequency = 0.0;
-            self.unvoiced_hops = 0;
         }
     }
 
@@ -111,8 +105,6 @@ impl HarmonyState {
         self.phases.fill(0.0);
         self.targets.fill(0.0);
         self.initialized.fill(false);
-        self.source_frequency = 0.0;
-        self.unvoiced_hops = 0;
     }
 
     pub(crate) fn track_pitch(&mut self, input: &[f32; 1024], config: &VocalEffectsConfig) -> f32 {
@@ -195,21 +187,8 @@ pub fn process(
         &mut frequencies,
         hop,
     );
-    fundamental = frequency_analysis::resolve_harmony_octave_1024(
-        fundamental,
-        &magnitudes,
-        config.sample_rate,
-        state.source_frequency,
-    );
-    if fundamental > 0.0 {
-        state.source_frequency = fundamental;
-        state.unvoiced_hops = 0;
-    } else {
-        state.unvoiced_hops = state.unvoiced_hops.saturating_add(1);
-        if state.unvoiced_hops >= 8 {
-            state.source_frequency = 0.0;
-        }
-    }
+    // The complete period identifies the register. Reinterpreting it from
+    // even/odd spectral balance makes a vowel change look like an octave jump.
     // Filtered period analysis identifies the harmonic; inter-frame spectral
     // phase provides precise tuning, avoiding coarse-period beating at unison.
     if fundamental > 0.0 {
