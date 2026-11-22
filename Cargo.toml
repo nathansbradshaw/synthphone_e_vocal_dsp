@@ -13,6 +13,8 @@ default = ["embedded"]
 std = ["dep:critical-section", "critical-section?/std"]
 embedded = []
 cortex-m = ["dep:cortex-m"]
+# Enable only on ARM targets with an initialized single-precision FPU.
+arm-hardware-float = []
 cepstral-smoothing = []
 formant-shifting = ["cepstral-smoothing"]
 debug-logging = []

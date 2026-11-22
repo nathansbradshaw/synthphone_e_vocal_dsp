@@ -1,6 +1,7 @@
 use core::f32::consts::PI;
 
-use libm::{atan2f, floorf, fmodf, roundf, sqrtf};
+use super::math::sqrtf;
+use libm::{atan2f, floorf, fmodf, roundf};
 
 use crate::audio::find_nearest_note_frequency;
 

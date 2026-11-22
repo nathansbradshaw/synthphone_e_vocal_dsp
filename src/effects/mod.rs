@@ -1,4 +1,5 @@
-use libm::{expf, floorf, sqrtf};
+use crate::dsp::math::sqrtf;
+use libm::{expf, floorf};
 pub mod harmony_stream;
 
 use crate::{
