@@ -1,6 +1,6 @@
 use core::f32::consts::PI;
 
-use libm::{atan2f, cosf, floorf, fmodf, roundf, sinf, sqrtf};
+use libm::{atan2f, floorf, fmodf, roundf, sqrtf};
 
 use crate::audio::find_nearest_note_frequency;
 
@@ -630,10 +630,8 @@ pub fn perform_phase_vocoder_synthesis<const N: usize>(
         let out_phase = wrap_phase(last_output_phases[i] + phase_diff);
         last_output_phases[i] = out_phase;
 
-        full_spectrum[i] = microfft::Complex32 {
-            re: amplitude * cosf(out_phase),
-            im: amplitude * sinf(out_phase),
-        };
+        let (sin, cos) = super::trigonometry::sin_cos(out_phase);
+        full_spectrum[i] = microfft::Complex32 { re: amplitude * cos, im: amplitude * sin };
 
         if i > 0 && i < (N / 2) {
             full_spectrum[N - i] = full_spectrum[i].conj();
@@ -952,5 +950,40 @@ mod detect_fun_freq_tests {
             "Sub-octave disambiguation should recover fundamental bin {}, got {}",
             TRUE_FUNDAMENTAL, result
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_synthesis_tests {
+    use super::*;
+    #[test]
+    fn vocoder_complex_spectrum_matches_libm_below_five_millionths() {
+        let mut magnitudes = [0f32; 1024];
+        let mut frequencies = [0f32; 1024];
+        let mut phases = [0f32; 1024];
+        let mut spectrum = [microfft::Complex32 { re: 0., im: 0. }; 1024];
+        for i in 0..512 {
+            magnitudes[i] = (i % 97) as f32 / 97.;
+            frequencies[i] = i as f32 + libm::sinf(i as f32 * 0.17) * 0.75;
+            phases[i] = libm::cosf(i as f32 * 0.21) * core::f32::consts::PI;
+        }
+        for _ in 0..64 {
+            perform_phase_vocoder_synthesis(
+                &mut magnitudes,
+                &mut frequencies,
+                &mut phases,
+                &mut spectrum,
+                256,
+            );
+            for i in 0..512 {
+                let expected_re = magnitudes[i] * libm::cosf(phases[i]);
+                let expected_im = magnitudes[i] * libm::sinf(phases[i]);
+                assert!((spectrum[i].re - expected_re).abs() < 5e-6);
+                assert!((spectrum[i].im - expected_im).abs() < 5e-6);
+                if i > 0 {
+                    assert_eq!(spectrum[1024 - i], spectrum[i].conj());
+                }
+            }
+        }
     }
 }
