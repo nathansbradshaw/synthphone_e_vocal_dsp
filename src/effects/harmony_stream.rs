@@ -213,13 +213,13 @@ pub fn process(
         // Noise/consonants are shared once. Match the RMS scale of the averaged
         // independent voiced parts instead of jumping to unity at every dropout.
         if slots[..count].iter().all(|&slot| voice_gains[slot] == 1.0) {
-            1.0 / libm::sqrtf(count as f32)
+            1.0 / crate::dsp::sqrtf(count as f32)
         } else {
             let power = slots[..count]
                 .iter()
                 .map(|&slot| voice_gains[slot] * voice_gains[slot])
                 .sum::<f32>();
-            libm::sqrtf(lead * lead + power) / (lead + count as f32)
+            crate::dsp::sqrtf(lead * lead + power) / (lead + count as f32)
         }
     } else {
         lead * normalization
