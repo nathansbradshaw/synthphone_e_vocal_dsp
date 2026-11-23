@@ -296,9 +296,25 @@ where
     let carrier_fft = F::forward_fft(carrier_buffer);
     // microfft packs Nyquist into DC.im. It is not a complex DC component.
     modulator_fft[0].im = 0.0;
-    let magnitudes = core::array::from_fn(|i| {
+    carrier_fft[0].im = 0.0;
+    let mut magnitudes: [f32; HALF_N] = core::array::from_fn(|i| {
         sqrtf(modulator_fft[i].re * modulator_fft[i].re + modulator_fft[i].im * modulator_fft[i].im)
     });
+    // Unvoiced detector: sibilants and plosive bursts put most of their energy
+    // above ~3 kHz, sung vowels well under 10%. Fully unvoiced at >= 40%.
+    let split = ((3000.0 * N as f32 / config.sample_rate) as usize).clamp(1, HALF_N - 1);
+    let (mut total_power, mut high_power) = (0.0, 0.0);
+    for (i, &m) in magnitudes.iter().enumerate().skip(1) {
+        total_power += m * m;
+        if i >= split {
+            high_power += m * m;
+        }
+    }
+    let unvoiced = if total_power > 0.0 {
+        ((high_power / total_power - 0.15) * 4.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     // Two bounded moving averages remove the sung harmonic comb. Multiplying
     // the original carrier (rather than replacing its bin magnitudes) preserves
     // its excitation, per-note faders and exact zero when all carriers are muted.
@@ -306,6 +322,18 @@ where
     let mut envelope = [0.0; HALF_N];
     extract_simple_envelope(&magnitudes, &mut first);
     extract_simple_envelope(&first, &mut envelope);
+    // The carrier's own smoothed envelope flattens its spectral tilt: a
+    // triangle or chord otherwise has almost nothing above its fundamentals
+    // for the vocal formants to shape. The correction is scale invariant, so
+    // output stays linear in carrier level; the boost is capped at +40 dB.
+    for (slot, bin) in magnitudes.iter_mut().zip(carrier_fft.iter()) {
+        *slot = sqrtf(bin.re * bin.re + bin.im * bin.im);
+    }
+    let mut carrier_envelope = [0.0; HALF_N];
+    extract_simple_envelope(&magnitudes, &mut first);
+    extract_simple_envelope(&first, &mut carrier_envelope);
+    let carrier_peak = carrier_envelope[1..].iter().fold(0.0f32, |a, &b| a.max(b));
+    let carrier_floor = (carrier_peak * 0.01).max(f32::MIN_POSITIVE);
     let ratio = match settings.formant {
         1 => settings.formant_male_ratio,
         2 => settings.formant_female_ratio,
@@ -319,15 +347,20 @@ where
     // A Hann-windowed sinusoid occupies ~N/2 summed magnitude. The smoother
     // spans 17 bins; this fixed calibration keeps gain linear in the carrier.
     let calibration = 34.0 / N as f32;
+    // Unvoiced frames crossfade from the carrier to the voice's own spectrum.
+    // Consonants follow the vocoded level (~0.7x the calibrated carrier peak,
+    // measured on real singing), so note faders still scale them and muting
+    // every note stays exactly silent. Never louder than the original voice.
+    let passthrough = unvoiced * (carrier_peak * calibration * 0.7).min(1.0);
     for i in 1..HALF_N {
         let magnitude = sample_envelope(&envelope, i as f32 / ratio);
         let gain = if magnitude > config.magnitude_threshold {
-            magnitude * calibration
+            magnitude * calibration * carrier_peak / carrier_envelope[i].max(carrier_floor)
         } else {
             0.0
-        };
-        full_spectrum[i].re = carrier_fft[i].re * gain;
-        full_spectrum[i].im = carrier_fft[i].im * gain;
+        } * (1.0 - unvoiced);
+        full_spectrum[i].re = carrier_fft[i].re * gain + modulator_fft[i].re * passthrough;
+        full_spectrum[i].im = carrier_fft[i].im * gain + modulator_fft[i].im * passthrough;
         full_spectrum[N - i] = full_spectrum[i].conj();
     }
 
